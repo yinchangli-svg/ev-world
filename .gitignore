@@ -1,0 +1,38 @@
+# ==============================
+# WordApp 单词学习系统 专用过滤
+# ==============================
+
+# 数据库文件（本地数据，不上传）
+*.db
+*.sqlite
+*.sqlite3
+words_database.db
+
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# 编辑器配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志文件
+*.log
+logs/
+
+# 打包输出
+dist/
+build/
+*.exe
+*.spec
+*.msi
