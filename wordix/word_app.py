@@ -10,21 +10,22 @@ from datetime import date
 def init_db():
     conn = sqlite3.connect("wordapp.db")
     c = conn.cursor()
-    # c.executescript('''
+    c.executescript('''
  
-    # CREATE TABLE IF NOT EXISTS levels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, sort INTEGER DEFAULT 0);
-    # CREATE TABLE IF NOT EXISTS roots (id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT NOT NULL UNIQUE, meaning TEXT NOT NULL);
-    # CREATE TABLE IF NOT EXISTS affixes (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, affix TEXT NOT NULL, meaning TEXT NOT NULL, UNIQUE(affix, type));
-    # CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL UNIQUE, uk_phonetic TEXT, us_phonetic TEXT, audio_path TEXT, pos TEXT, meaning TEXT NOT NULL, level_id INTEGER, root_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (level_id) REFERENCES levels(id), FOREIGN KEY (root_id) REFERENCES roots(id));
-    # CREATE TABLE IF NOT EXISTS examples (id INTEGER PRIMARY KEY AUTOINCREMENT, word_id INTEGER NOT NULL, en_sentence TEXT NOT NULL, cn_sentence TEXT NOT NULL, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
-    # CREATE TABLE IF NOT EXISTS user_progress (id INTEGER PRIMARY KEY DEFAULT 1, continuous_days INTEGER DEFAULT 0, last_study_date DATE, total_points INTEGER DEFAULT 0, current_level_id INTEGER DEFAULT 1, CONSTRAINT only_one_row CHECK (id = 1));
-    # CREATE TABLE IF NOT EXISTS daily_study (study_date DATE PRIMARY KEY, target_count INTEGER DEFAULT 20, done_count INTEGER DEFAULT 0);
-    # CREATE TABLE IF NOT EXISTS word_mastery (word_id INTEGER PRIMARY KEY, is_mastered INTEGER DEFAULT 0, study_count INTEGER DEFAULT 0, wrong_count INTEGER DEFAULT 0, last_review DATE, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
-    # CREATE TABLE IF NOT EXISTS wrong_book (id INTEGER PRIMARY KEY AUTOINCREMENT, word_id INTEGER NOT NULL, wrong_time DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
-    # CREATE TABLE IF NOT EXISTS medals (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, condition TEXT NOT NULL, icon TEXT, is_unlocked INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS levels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, sort INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS roots (id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT NOT NULL UNIQUE, meaning TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS affixes (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, affix TEXT NOT NULL, meaning TEXT NOT NULL, UNIQUE(affix, type));
+    CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL UNIQUE, uk_phonetic TEXT, us_phonetic TEXT, audio_path TEXT, pos TEXT, meaning TEXT NOT NULL, level_id INTEGER, root_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (level_id) REFERENCES levels(id), FOREIGN KEY (root_id) REFERENCES roots(id));
+    CREATE TABLE IF NOT EXISTS examples (id INTEGER PRIMARY KEY AUTOINCREMENT, word_id INTEGER NOT NULL, en_sentence TEXT NOT NULL, cn_sentence TEXT NOT NULL, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_progress (id INTEGER PRIMARY KEY DEFAULT 1, continuous_days INTEGER DEFAULT 0, last_study_date DATE, total_points INTEGER DEFAULT 0, current_level_id INTEGER DEFAULT 1, CONSTRAINT only_one_row CHECK (id = 1));
+    CREATE TABLE IF NOT EXISTS daily_study (study_date DATE PRIMARY KEY, target_count INTEGER DEFAULT 20, done_count INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS word_mastery (word_id INTEGER PRIMARY KEY, is_mastered INTEGER DEFAULT 0, study_count INTEGER DEFAULT 0, wrong_count INTEGER DEFAULT 0, last_review DATE, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS wrong_book (id INTEGER PRIMARY KEY AUTOINCREMENT, word_id INTEGER NOT NULL, wrong_time DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS medals (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, condition TEXT NOT NULL, icon TEXT, is_unlocked INTEGER DEFAULT 0);
+    ''')
     # INSERT INTO levels (name, sort) VALUES ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),('高中必修',40),('高中选择性必修',50),('大学四级',60),('大学六级',70),('托福',80),('雅思',90);
     # INSERT INTO user_progress (id, continuous_days, total_points) VALUES (1,0,0);
-    # ''')
+   
 
     # 初始化等级数据（仅表为空时插入）
     c.execute('''INSERT OR IGNORE INTO levels (name, sort) 
@@ -358,9 +359,9 @@ text_cn = Text(f,width=28,height=2)
 text_cn.grid(row=8,column=1,pady=4)
 ttk.Button(add_f,text="保存单词",command=save_word).pack(pady=10)
 
-# 5 词表管理
+# 5 词库管理
 tab_f = ttk.Frame(tab)
-tab.add(tab_f, text="词表管理")
+tab.add(tab_f, text="词库管理")
 tree = ttk.Treeview(tab_f,columns=("w","m","l"),show="headings",height=15)
 tree.heading("w",text="单词")
 tree.heading("m",text="释义")
