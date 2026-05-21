@@ -104,7 +104,7 @@ def load_all_words():
 # ======================
 init_database()
 root = tk.Tk()
-root.title(f"词根单词 · {VERSION}")
+root.title(f"玩转背单词 · {VERSION}")
 root.geometry("920x720")
 root.resizable(False, False)
 
