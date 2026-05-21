@@ -1,12 +1,24 @@
 import tkinter as tk
 from tkinter import ttk, Frame, Label, Button, Entry, Text, messagebox
 import sqlite3
+import pyttsx3  # 内置发音引擎，无需联网 / 无需额外安装
 
 # ======================
-# 版本 v1|
+# 版本 v1 + 音标朗读功能
 # ======================
-VERSION = "v1 | 玩转单词单机版"
+VERSION = "v1 | 玩转单词单机版（带发音）"
 DB_NAME = "wordix.db"
+
+# ======================
+# 初始化发音引擎
+# ======================
+engine = pyttsx3.init()
+
+# 朗读英文单词
+def speak_word(text):
+    if text.strip():
+        engine.say(text.strip())
+        engine.runAndWait()
 
 # ======================
 # 数据库初始化
@@ -15,14 +27,12 @@ def init_database():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    # 等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
 
-    # 单词表（关联等级、前缀、词根、后缀）
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL UNIQUE,
@@ -36,17 +46,11 @@ def init_database():
                     FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
 
-    # ======================
-    # 初始化等级（仅空表插入）
-    # ======================
     level_data = [
         ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),
         ('高中必修',40),('高中选择性必修',50),('大学四级',60),
         ('大学六级',70),('托福',80),('雅思',90)
     ]
-    # for name, sort in level_data:
-    #     c.execute('''INSERT OR IGNORE INTO levels (name,sort)
-    #                  SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM levels)''', (name, sort))
     for name, sort in level_data:
         c.execute('''INSERT OR IGNORE INTO levels (name, sort)
                       VALUES (?, ?)''', (name, sort))
@@ -62,9 +66,8 @@ def get_level_options():
     c.execute("SELECT id, name FROM levels ORDER BY sort")
     data = c.fetchall()
     conn.close()
-    return data  # [(id,name), ...]
+    return data
 
-# 等级名称 → ID
 def get_level_id_by_name(name):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -73,13 +76,12 @@ def get_level_id_by_name(name):
     conn.close()
     return res[0] if res else None
 
-# 保存单词（真正写入）
 def save_word_to_db(word_data):
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute('''INSERT INTO words
-                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id, 
+                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id,
                      example, translation)
                      VALUES (?,?,?,?,?,?,?,?)''', word_data)
         conn.commit()
@@ -88,7 +90,6 @@ def save_word_to_db(word_data):
     except sqlite3.IntegrityError:
         return False
 
-# 加载所有单词（关联等级名称，不显示ID）
 def load_all_words():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -104,7 +105,7 @@ def load_all_words():
 # ======================
 init_database()
 root = tk.Tk()
-root.title(f"玩转背单词 · {VERSION}")
+root.title(f"词根单词 · {VERSION}")
 root.geometry("920x720")
 root.resizable(False, False)
 
@@ -123,7 +124,7 @@ Label(tab_home, text="🔥 词根单词学习系统", font=("微软雅黑",22,"b
 Label(tab_home, text=VERSION, font=("微软雅黑",12)).pack()
 
 # ==============================================
-# 单词录入
+# 单词录入（新增：发音按钮）
 # ==============================================
 tab_add_word = ttk.Frame(tab_control)
 tab_control.add(tab_add_word, text="单词录入")
@@ -132,7 +133,6 @@ Label(tab_add_word, text="单词录入", font=("微软雅黑",16,"bold")).pack(p
 f = Frame(tab_add_word)
 f.pack(padx=40)
 
-# 输入组件
 entry_word = Entry(f, width=30)
 entry_uk = Entry(f, width=30)
 entry_us = Entry(f, width=30)
@@ -141,9 +141,11 @@ entry_meaning = Entry(f, width=30)
 
 level_names = [n for _,n in get_level_options()]
 level_var = tk.StringVar(value=level_names[0] if level_names else "")
-
-
 cb_level = ttk.Combobox(f, textvariable=level_var, values=level_names, width=27, state="readonly")
+
+# 发音按钮
+btn_speak = Button(f, text="🔊 朗读单词", font=("微软雅黑",10,"bold"),
+                   command=lambda: speak_word(entry_word.get()))
 
 rows = [
     ("单词：", entry_word),
@@ -152,12 +154,14 @@ rows = [
     ("词性：", entry_pos),
     ("中文释义：", entry_meaning),
     ("等级：", cb_level),
-
 ]
 
 for i, (t, e) in enumerate(rows):
     Label(f, text=t, width=10, anchor="e").grid(row=i, column=0, pady=6)
     e.grid(row=i, column=1, pady=6)
+
+# 朗读按钮放在单词输入框同一行
+btn_speak.grid(row=0, column=2, padx=10, pady=6)
 
 Label(f, text="英文例句：").grid(row=10, column=0, sticky="ne", pady=6)
 txt_example = Text(f, width=28, height=3)
@@ -174,7 +178,6 @@ def save_word():
         messagebox.showwarning("提示","单词和释义不能为空")
         return
 
-    # 转换ID
     level_id = get_level_id_by_name(level_var.get())
 
     data = (
@@ -184,14 +187,12 @@ def save_word():
         entry_pos.get().strip(),
         meaning,
         level_id,
-
         txt_example.get("1.0", tk.END).strip(),
         txt_trans.get("1.0", tk.END).strip()
     )
 
     if save_word_to_db(data):
         messagebox.showinfo("成功","单词已永久保存！")
-        # 清空
         entry_word.delete(0,tk.END)
         entry_uk.delete(0,tk.END)
         entry_us.delete(0,tk.END)
@@ -206,7 +207,7 @@ def save_word():
 ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
 
 # ==============================================
-# 词表管理（已修复：显示等级名称，不是ID）
+# 词库管理（新增：选中朗读）
 # ==============================================
 tab_table = ttk.Frame(tab_control)
 tab_control.add(tab_table, text="词库管理")
@@ -221,12 +222,25 @@ tree.column("m", width=350)
 tree.column("l", width=120)
 tree.pack(padx=20, pady=10, fill="x")
 
+# 选中朗读
+def on_tree_click(event):
+    item = tree.selection()
+    if item:
+        word = tree.item(item[0], "values")[0]
+        speak_word(word)
+
+tree.bind("<Double-1>", on_tree_click)  # 双击朗读
+tree.bind("<Return>", on_tree_click)    # 回车朗读
+
 def refresh_words():
     tree.delete(*tree.get_children())
     for row in load_all_words():
         tree.insert("", "end", values=row)
 
 refresh_words()
+
+# 提示标签
+Label(tab_table, text="💡 双击单词 / 按回车 即可发音", font=("微软雅黑",11)).pack()
 
 # ======================
 # 启动
