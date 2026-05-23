@@ -27,12 +27,14 @@ def init_database():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
+    # 等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
 
+    # 单词表（关联等级、前缀、词根、后缀）
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL UNIQUE,
@@ -46,6 +48,9 @@ def init_database():
                     FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
 
+    # ======================
+    # 初始化等级（仅空表插入）
+    # ======================
     level_data = [
         ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),
         ('高中必修',40),('高中选择性必修',50),('大学四级',60),
@@ -66,8 +71,9 @@ def get_level_options():
     c.execute("SELECT id, name FROM levels ORDER BY sort")
     data = c.fetchall()
     conn.close()
-    return data
+    return data  # [(id,name), ...]
 
+# 等级名称 → ID
 def get_level_id_by_name(name):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -76,6 +82,7 @@ def get_level_id_by_name(name):
     conn.close()
     return res[0] if res else None
 
+# 保存单词（真正写入）
 def save_word_to_db(word_data):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -90,6 +97,7 @@ def save_word_to_db(word_data):
     except sqlite3.IntegrityError:
         return False
 
+# 加载所有单词（关联等级名称，不显示ID）
 def load_all_words():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -99,6 +107,35 @@ def load_all_words():
     data = c.fetchall()
     conn.close()
     return data
+
+# 分页查询单词
+def load_words_by_page(page_num, page_size=10):
+    offset = (page_num - 1) * page_size
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''SELECT w.word, w.meaning, l.name
+                 FROM words w
+                 LEFT JOIN levels l ON w.level_id = l.id
+                 LIMIT ? OFFSET ?''', (page_size, offset))
+    data = c.fetchall()
+    # 获取总条数
+    c.execute('''SELECT COUNT(*) FROM words''')
+    total = c.fetchone()[0]
+    conn.close()
+    total_page = (total + page_size - 1) // page_size
+    return data, total, total_page
+
+# 精确查找单词
+def search_word_in_db(word):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''SELECT w.word, w.meaning, l.name
+                 FROM words w
+                 LEFT JOIN levels l ON w.level_id = l.id
+                 WHERE w.word = ?''', (word,))
+    res = c.fetchone()
+    conn.close()
+    return res
 
 # ======================
 # 主窗口
@@ -133,6 +170,7 @@ Label(tab_add_word, text="单词录入", font=("微软雅黑",16,"bold")).pack(p
 f = Frame(tab_add_word)
 f.pack(padx=40)
 
+# 输入组件
 entry_word = Entry(f, width=30)
 entry_uk = Entry(f, width=30)
 entry_us = Entry(f, width=30)
@@ -141,6 +179,7 @@ entry_meaning = Entry(f, width=30)
 
 level_names = [n for _,n in get_level_options()]
 level_var = tk.StringVar(value=level_names[0] if level_names else "")
+
 cb_level = ttk.Combobox(f, textvariable=level_var, values=level_names, width=27, state="readonly")
 
 # 发音按钮
@@ -178,6 +217,7 @@ def save_word():
         messagebox.showwarning("提示","单词和释义不能为空")
         return
 
+    # 转换ID
     level_id = get_level_id_by_name(level_var.get())
 
     data = (
@@ -193,6 +233,7 @@ def save_word():
 
     if save_word_to_db(data):
         messagebox.showinfo("成功","单词已永久保存！")
+        # 清空
         entry_word.delete(0,tk.END)
         entry_uk.delete(0,tk.END)
         entry_us.delete(0,tk.END)
@@ -207,12 +248,44 @@ def save_word():
 ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
 
 # ==============================================
-# 词库管理（新增：选中朗读）
+# 词库管理（新增：查找功能 + 分页功能）
 # ==============================================
 tab_table = ttk.Frame(tab_control)
 tab_control.add(tab_table, text="词库管理")
 
-Label(tab_table, text="词库管理", font=("微软雅黑",16,"bold")).pack(pady=15)
+Label(tab_table, text="词库管理", font=("微软雅黑",16,"bold")).pack(pady=5)
+
+# ====================== 搜索框区域 ======================
+search_frame = Frame(tab_table)
+search_frame.pack(fill="x", padx=20, pady=5)
+Label(search_frame, text="查找单词：", font=("微软雅黑",12)).pack(side="left", padx=5)
+search_entry = Entry(search_frame, width=25, font=("微软雅黑",12))
+search_entry.pack(side="left", padx=5)
+
+# 分页全局变量
+current_page = 1
+page_size = 10
+
+# 搜索功能（回车触发）
+def search_word():
+    keyword = search_entry.get().strip()
+    if not keyword:
+        refresh_words()
+        return
+    res = search_word_in_db(keyword)
+    if res:
+        tree.delete(*tree.get_children())
+        tree.insert("", "end", values=res)
+        # 自动选中找到的行
+        tree.selection_set(tree.get_children()[0])
+        messagebox.showinfo("查找成功", f"找到单词：{keyword}")
+    else:
+        messagebox.showwarning("未找到", f"词库中不存在单词：{keyword}")
+
+search_entry.bind("<Return>", lambda e: search_word())
+Button(search_frame, text="搜索", command=search_word, width=8).pack(side="left", padx=5)
+
+# ====================== 单词列表 ======================
 tree = ttk.Treeview(tab_table, columns=("w","m","l"), show="headings", height=15)
 tree.heading("w", text="单词")
 tree.heading("m", text="释义")
@@ -221,6 +294,32 @@ tree.column("w", width=140)
 tree.column("m", width=350)
 tree.column("l", width=120)
 tree.pack(padx=20, pady=10, fill="x")
+
+# ====================== 分页控件 ======================
+page_frame = Frame(tab_table)
+page_frame.pack(fill="x", padx=20, pady=5)
+
+page_label = Label(page_frame, text="第 1 页", font=("微软雅黑",11))
+page_label.pack(side="left", padx=10)
+
+def prev_page():
+    global current_page
+    if current_page > 1:
+        current_page -= 1
+        refresh_words()
+
+def next_page():
+    global current_page
+    _, _, total_page = load_words_by_page(current_page, page_size)
+    if current_page < total_page:
+        current_page += 1
+        refresh_words()
+
+btn_prev = Button(page_frame, text="上一页", command=prev_page, width=10)
+btn_prev.pack(side="left", padx=5)
+btn_next = Button(page_frame, text="下一页", command=next_page, width=10)
+btn_next.pack(side="left", padx=5)
+
 
 # 选中朗读
 def on_tree_click(event):
@@ -232,10 +331,16 @@ def on_tree_click(event):
 tree.bind("<Double-1>", on_tree_click)  # 双击朗读
 tree.bind("<Return>", on_tree_click)    # 回车朗读
 
+
+# 刷新分页列表
 def refresh_words():
+    data, total, total_page = load_words_by_page(current_page, page_size)
     tree.delete(*tree.get_children())
-    for row in load_all_words():
+    for row in data:
         tree.insert("", "end", values=row)
+    page_label.config(text=f"第 {current_page}/{total_page} 页  总计：{total} 个单词")
+
+
 
 refresh_words()
 
