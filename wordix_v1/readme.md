@@ -47,7 +47,7 @@
 - 等级切换后录入页面自动同步
 - 数据完全按等级隔离，不会混乱
 
-## v1.3新增功能说明（完全满足你需求）
+## v1.3新增功能说明
 
 ### 1. 导出
 - 导出当前等级下所有单词
@@ -61,6 +61,9 @@
 - 点击即可下载标准 Excel 导入模板
 - 列格式完全匹配系统，直接填写即可导入
 
+## v1.3.1 
+- fix bug database is locked
+- upload download button label unclear
 ## 🚀 快速运行
 ### 1. 安装 Python
 https://www.python.org/downloads/

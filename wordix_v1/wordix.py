@@ -59,19 +59,23 @@ def init_database():
 # 工具函数
 # ======================
 def get_level_options():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, name FROM levels ORDER BY sort")
-    data = c.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT id, name FROM levels ORDER BY sort")
+        data = c.fetchall()
+    finally:
+        conn.close()
     return data
 
 def get_level_id_by_name(name):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id FROM levels WHERE name=?", (name,))
-    res = c.fetchone()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT id FROM levels WHERE name=?", (name,))
+        res = c.fetchone()
+    finally:
+        conn.close()
     return res[0] if res else None
 
 def save_word_to_db(word_data):
@@ -82,36 +86,41 @@ def save_word_to_db(word_data):
                      (word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation)
                      VALUES (?,?,?,?,?,?,?,?)''', word_data)
         conn.commit()
-        conn.close()
         return True
     except sqlite3.IntegrityError:
         return False
+    finally:
+        conn.close()
 
 def load_words_by_level_and_page(level_id, page_num, page_size=10):
-    offset = (page_num - 1) * page_size
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''SELECT w.word, w.meaning, l.name
-                 FROM words w
-                 LEFT JOIN levels l ON w.level_id = l.id
-                 WHERE w.level_id=?
-                 LIMIT ? OFFSET ?''', (level_id, page_size, offset))
-    data = c.fetchall()
-    c.execute('''SELECT COUNT(*) FROM words WHERE level_id=?''', (level_id,))
-    total = c.fetchone()[0]
-    conn.close()
-    total_page = (total + page_size - 1) // page_size
+    try:
+        offset = (page_num - 1) * page_size
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('''SELECT w.word, w.meaning, l.name
+                     FROM words w
+                     LEFT JOIN levels l ON w.level_id = l.id
+                     WHERE w.level_id=?
+                     LIMIT ? OFFSET ?''', (level_id, page_size, offset))
+        data = c.fetchall()
+        c.execute('''SELECT COUNT(*) FROM words WHERE level_id=?''', (level_id,))
+        total = c.fetchone()[0]
+        total_page = (total + page_size - 1) // page_size
+    finally:
+        conn.close()
     return data, total, total_page
 
 def search_word_in_db_by_level(level_id, word):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''SELECT w.word, w.meaning, l.name
-                 FROM words w
-                 LEFT JOIN levels l ON w.level_id = l.id
-                 WHERE w.level_id=? AND w.word=?''', (level_id, word))
-    res = c.fetchone()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('''SELECT w.word, w.meaning, l.name
+                     FROM words w
+                     LEFT JOIN levels l ON w.level_id = l.id
+                     WHERE w.level_id=? AND w.word=?''', (level_id, word))
+        res = c.fetchone()
+    finally:
+        conn.close()
     return res
 
 # ======================
@@ -124,7 +133,6 @@ def export_current_level_words(level_id, level_name):
             SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
             FROM words WHERE level_id = {level_id}
         """, conn)
-        conn.close()
 
         if df.empty:
             messagebox.showwarning("提示", "当前等级暂无单词可导出")
@@ -142,6 +150,8 @@ def export_current_level_words(level_id, level_name):
         messagebox.showinfo("成功", f"已导出 {len(df)} 个单词！")
     except Exception as e:
         messagebox.showerror("错误", f"导出失败：{str(e)}")
+    finally:
+        conn.close()
 
 def download_import_template():
     template = {
