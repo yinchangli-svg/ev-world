@@ -1,12 +1,14 @@
 import tkinter as tk
-from tkinter import ttk, Frame, Label, Button, Entry, Text, messagebox
+from tkinter import ttk, Frame, Label, Button, Entry, Text, messagebox, filedialog
 import sqlite3
-import pyttsx3  # 内置发音引擎，无需联网 / 无需额外安装
+import pyttsx3
+import pandas as pd
+import os
 
 # ======================
-# 版本 v1 + 音标朗读功能
+# 版本 v1 + 音标朗读 + 等级筛选同步 + 导入导出
 # ======================
-VERSION = "v1 | 玩转单词单机版（带发音）"
+VERSION = "v1.3 | 玩转单词单机版（发音+等级+导入导出）"
 DB_NAME = "wordix.db"
 
 # ======================
@@ -14,7 +16,6 @@ DB_NAME = "wordix.db"
 # ======================
 engine = pyttsx3.init()
 
-# 朗读英文单词
 def speak_word(text):
     if text.strip():
         engine.say(text.strip())
@@ -26,15 +27,11 @@ def speak_word(text):
 def init_database():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-
-    # 等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
-
-    # 单词表（关联等级、前缀、词根、后缀）
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL UNIQUE,
@@ -47,10 +44,6 @@ def init_database():
                     translation TEXT,
                     FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
-
-    # ======================
-    # 初始化等级（仅空表插入）
-    # ======================
     level_data = [
         ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),
         ('高中必修',40),('高中选择性必修',50),('大学四级',60),
@@ -71,9 +64,8 @@ def get_level_options():
     c.execute("SELECT id, name FROM levels ORDER BY sort")
     data = c.fetchall()
     conn.close()
-    return data  # [(id,name), ...]
+    return data
 
-# 等级名称 → ID
 def get_level_id_by_name(name):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -82,14 +74,12 @@ def get_level_id_by_name(name):
     conn.close()
     return res[0] if res else None
 
-# 保存单词（真正写入）
 def save_word_to_db(word_data):
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute('''INSERT INTO words
-                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id,
-                     example, translation)
+                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation)
                      VALUES (?,?,?,?,?,?,?,?)''', word_data)
         conn.commit()
         conn.close()
@@ -97,45 +87,124 @@ def save_word_to_db(word_data):
     except sqlite3.IntegrityError:
         return False
 
-# 加载所有单词（关联等级名称，不显示ID）
-def load_all_words():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''SELECT w.word, w.meaning, l.name
-                 FROM words w
-                 LEFT JOIN levels l ON w.level_id = l.id''')
-    data = c.fetchall()
-    conn.close()
-    return data
-
-# 分页查询单词
-def load_words_by_page(page_num, page_size=10):
+def load_words_by_level_and_page(level_id, page_num, page_size=10):
     offset = (page_num - 1) * page_size
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''SELECT w.word, w.meaning, l.name
                  FROM words w
                  LEFT JOIN levels l ON w.level_id = l.id
-                 LIMIT ? OFFSET ?''', (page_size, offset))
+                 WHERE w.level_id=?
+                 LIMIT ? OFFSET ?''', (level_id, page_size, offset))
     data = c.fetchall()
-    # 获取总条数
-    c.execute('''SELECT COUNT(*) FROM words''')
+    c.execute('''SELECT COUNT(*) FROM words WHERE level_id=?''', (level_id,))
     total = c.fetchone()[0]
     conn.close()
     total_page = (total + page_size - 1) // page_size
     return data, total, total_page
 
-# 精确查找单词
-def search_word_in_db(word):
+def search_word_in_db_by_level(level_id, word):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''SELECT w.word, w.meaning, l.name
                  FROM words w
                  LEFT JOIN levels l ON w.level_id = l.id
-                 WHERE w.word = ?''', (word,))
+                 WHERE w.level_id=? AND w.word=?''', (level_id, word))
     res = c.fetchone()
     conn.close()
     return res
+
+# ======================
+# 导入导出核心函数
+# ======================
+def export_current_level_words(level_id, level_name):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql(f"""
+            SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
+            FROM words WHERE level_id = {level_id}
+        """, conn)
+        conn.close()
+
+        if df.empty:
+            messagebox.showwarning("提示", "当前等级暂无单词可导出")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel 文件", "*.xlsx")],
+            initialfile=f"{level_name}_单词导出.xlsx"
+        )
+        if not path:
+            return
+
+        df.to_excel(path, index=False)
+        messagebox.showinfo("成功", f"已导出 {len(df)} 个单词！")
+    except Exception as e:
+        messagebox.showerror("错误", f"导出失败：{str(e)}")
+
+def download_import_template():
+    template = {
+        "word": ["apple"],
+        "uk_phonetic": ["ˈæpl"],
+        "us_phonetic": ["ˈæpl"],
+        "pos": ["n."],
+        "meaning": ["苹果"],
+        "example": ["This is an apple."],
+        "translation": ["这是一个苹果。"]
+    }
+    df = pd.DataFrame(template)
+    path = filedialog.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel 模板", "*.xlsx")],
+        initialfile="单词导入模板.xlsx"
+    )
+    if path:
+        df.to_excel(path, index=False)
+        messagebox.showinfo("成功", "导入模板已下载完成！")
+
+def import_words_excel(level_id):
+    path = filedialog.askopenfilename(
+        filetypes=[("Excel 文件", "*.xlsx;*.xls")]
+    )
+    if not path:
+        return
+
+    try:
+        df = pd.read_excel(path)
+        required = {"word", "meaning"}
+        if not required.issubset(df.columns):
+            messagebox.showerror("错误", "模板错误！必须包含 word 和 meaning 列")
+            return
+
+        success = 0
+        fail = 0
+        for _, row in df.iterrows():
+            word = str(row["word"]).strip()
+            meaning = str(row["meaning"]).strip()
+            if not word or not meaning:
+                fail += 1
+                continue
+
+            data = (
+                word,
+                str(row.get("uk_phonetic", "")).strip(),
+                str(row.get("us_phonetic", "")).strip(),
+                str(row.get("pos", "")).strip(),
+                meaning,
+                level_id,
+                str(row.get("example", "")).strip(),
+                str(row.get("translation", "")).strip()
+            )
+            if save_word_to_db(data):
+                success += 1
+            else:
+                fail += 1
+
+        messagebox.showinfo("导入完成", f"成功：{success} 个\n重复/失败：{fail} 个")
+        refresh_words()
+    except Exception as e:
+        messagebox.showerror("错误", f"导入失败：{str(e)}")
 
 # ======================
 # 主窗口
@@ -153,6 +222,16 @@ tab_control = ttk.Notebook(root)
 tab_control.pack(expand=1, fill="both", padx=10, pady=10)
 
 # ==============================================
+# 全局等级变量
+# ==============================================
+level_list = get_level_options()
+level_ids = [item[0] for item in level_list]
+level_names = [item[1] for item in level_list]
+
+current_level_id = tk.IntVar(value=level_ids[0] if level_ids else 0)
+current_level_name = tk.StringVar(value=level_names[0] if level_names else "")
+
+# ==============================================
 # 首页
 # ==============================================
 tab_home = ttk.Frame(tab_control)
@@ -161,7 +240,7 @@ Label(tab_home, text="🔥 词根单词学习系统", font=("微软雅黑",22,"b
 Label(tab_home, text=VERSION, font=("微软雅黑",12)).pack()
 
 # ==============================================
-# 单词录入（新增：发音按钮）
+# 单词录入
 # ==============================================
 tab_add_word = ttk.Frame(tab_control)
 tab_control.add(tab_add_word, text="单词录入")
@@ -170,19 +249,15 @@ Label(tab_add_word, text="单词录入", font=("微软雅黑",16,"bold")).pack(p
 f = Frame(tab_add_word)
 f.pack(padx=40)
 
-# 输入组件
 entry_word = Entry(f, width=30)
 entry_uk = Entry(f, width=30)
 entry_us = Entry(f, width=30)
 entry_pos = Entry(f, width=30)
 entry_meaning = Entry(f, width=30)
 
-level_names = [n for _,n in get_level_options()]
-level_var = tk.StringVar(value=level_names[0] if level_names else "")
+cb_level = ttk.Combobox(f, textvariable=current_level_name, values=level_names, width=27, state="readonly")
+cb_level.configure(state="disabled")
 
-cb_level = ttk.Combobox(f, textvariable=level_var, values=level_names, width=27, state="readonly")
-
-# 发音按钮
 btn_speak = Button(f, text="🔊 朗读单词", font=("微软雅黑",10,"bold"),
                    command=lambda: speak_word(entry_word.get()))
 
@@ -199,7 +274,6 @@ for i, (t, e) in enumerate(rows):
     Label(f, text=t, width=10, anchor="e").grid(row=i, column=0, pady=6)
     e.grid(row=i, column=1, pady=6)
 
-# 朗读按钮放在单词输入框同一行
 btn_speak.grid(row=0, column=2, padx=10, pady=6)
 
 Label(f, text="英文例句：").grid(row=10, column=0, sticky="ne", pady=6)
@@ -217,9 +291,7 @@ def save_word():
         messagebox.showwarning("提示","单词和释义不能为空")
         return
 
-    # 转换ID
-    level_id = get_level_id_by_name(level_var.get())
-
+    level_id = current_level_id.get()
     data = (
         word,
         entry_uk.get().strip(),
@@ -232,8 +304,7 @@ def save_word():
     )
 
     if save_word_to_db(data):
-        messagebox.showinfo("成功","单词已永久保存！")
-        # 清空
+        messagebox.showinfo("成功",f"单词已保存到：{current_level_name.get()}")
         entry_word.delete(0,tk.END)
         entry_uk.delete(0,tk.END)
         entry_us.delete(0,tk.END)
@@ -248,42 +319,70 @@ def save_word():
 ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
 
 # ==============================================
-# 词库管理（新增：查找功能 + 分页功能）
+# 词库管理（已修复：全部按钮可见）
 # ==============================================
 tab_table = ttk.Frame(tab_control)
 tab_control.add(tab_table, text="词库管理")
 
 Label(tab_table, text="词库管理", font=("微软雅黑",16,"bold")).pack(pady=5)
 
-# ====================== 搜索框区域 ======================
-search_frame = Frame(tab_table)
-search_frame.pack(fill="x", padx=20, pady=5)
-Label(search_frame, text="查找单词：", font=("微软雅黑",12)).pack(side="left", padx=5)
-search_entry = Entry(search_frame, width=25, font=("微软雅黑",12))
-search_entry.pack(side="left", padx=5)
+# ====================== 第一行：等级 + 搜索 ======================
+row1 = Frame(tab_table)
+row1.pack(fill="x", padx=20, pady=2)
+Label(row1, text="等级：", font=("微软雅黑",12)).pack(side="left", padx=2)
+level_comb = ttk.Combobox(row1, textvariable=current_level_name, values=level_names, width=18, state="readonly")
+level_comb.pack(side="left", padx=5)
 
-# 分页全局变量
+Label(row1, text="搜索：", font=("微软雅黑",12)).pack(side="left", padx=2)
+search_entry = Entry(row1, width=18, font=("微软雅黑",12))
+search_entry.pack(side="left", padx=5)
+Button(row1, text="搜索", command=lambda: search_word()).pack(side="left")
+
+# ====================== 第二行：导入 导出 模板下载（全部显示） ======================
+row2 = Frame(tab_table)
+row2.pack(fill="x", padx=20, pady=5)
+
+Button(row2, text="导出当前等级", bg="#4CAF50", fg="white",
+       command=lambda: export_current_level_words(current_level_id.get(), current_level_name.get())
+      ).pack(side="left", padx=5)
+
+Button(row2, text="导入单词", bg="#2196F3", fg="white",
+       command=lambda: import_words_excel(current_level_id.get())
+      ).pack(side="left", padx=5)
+
+# 蓝色链接
+lbl_temp = Label(row2, text="下载导入模板", fg="blue", cursor="hand2", font=("微软雅黑",10,"underline"))
+lbl_temp.pack(side="left", padx=5)
+lbl_temp.bind("<Button-1>", lambda e: download_import_template())
+
+# 分页
 current_page = 1
 page_size = 10
 
-# 搜索功能（回车触发）
+def on_level_change(event):
+    idx = level_comb.current()
+    current_level_id.set(level_ids[idx])
+    global current_page
+    current_page = 1
+    refresh_words()
+
+level_comb.bind("<<ComboboxSelected>>", on_level_change)
+
 def search_word():
     keyword = search_entry.get().strip()
     if not keyword:
         refresh_words()
         return
-    res = search_word_in_db(keyword)
+    res = search_word_in_db_by_level(current_level_id.get(), keyword)
     if res:
         tree.delete(*tree.get_children())
         tree.insert("", "end", values=res)
-        # 自动选中找到的行
         tree.selection_set(tree.get_children()[0])
         messagebox.showinfo("查找成功", f"找到单词：{keyword}")
     else:
-        messagebox.showwarning("未找到", f"词库中不存在单词：{keyword}")
+        messagebox.showwarning("未找到", "该等级下无此单词")
 
 search_entry.bind("<Return>", lambda e: search_word())
-Button(search_frame, text="搜索", command=search_word, width=8).pack(side="left", padx=5)
 
 # ====================== 单词列表 ======================
 tree = ttk.Treeview(tab_table, columns=("w","m","l"), show="headings", height=15)
@@ -295,7 +394,7 @@ tree.column("m", width=350)
 tree.column("l", width=120)
 tree.pack(padx=20, pady=10, fill="x")
 
-# ====================== 分页控件 ======================
+# ====================== 分页 ======================
 page_frame = Frame(tab_table)
 page_frame.pack(fill="x", padx=20, pady=5)
 
@@ -310,7 +409,7 @@ def prev_page():
 
 def next_page():
     global current_page
-    _, _, total_page = load_words_by_page(current_page, page_size)
+    _, _, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
     if current_page < total_page:
         current_page += 1
         refresh_words()
@@ -320,32 +419,24 @@ btn_prev.pack(side="left", padx=5)
 btn_next = Button(page_frame, text="下一页", command=next_page, width=10)
 btn_next.pack(side="left", padx=5)
 
-
-# 选中朗读
 def on_tree_click(event):
     item = tree.selection()
     if item:
         word = tree.item(item[0], "values")[0]
         speak_word(word)
 
-tree.bind("<Double-1>", on_tree_click)  # 双击朗读
-tree.bind("<Return>", on_tree_click)    # 回车朗读
+tree.bind("<Double-1>", on_tree_click)
+tree.bind("<Return>", on_tree_click)
 
-
-# 刷新分页列表
 def refresh_words():
-    data, total, total_page = load_words_by_page(current_page, page_size)
+    data, total, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
     tree.delete(*tree.get_children())
     for row in data:
         tree.insert("", "end", values=row)
-    page_label.config(text=f"第 {current_page}/{total_page} 页  总计：{total} 个单词")
-
-
+    page_label.config(text=f"第 {current_page}/{total_page} 页 | 本等级：{total} 个")
 
 refresh_words()
-
-# 提示标签
-Label(tab_table, text="💡 双击单词 / 按回车 即可发音", font=("微软雅黑",11)).pack()
+Label(tab_table, text="💡 双击 / 回车 发音｜导入导出支持 Excel", font=("微软雅黑",11)).pack()
 
 # ======================
 # 启动
