@@ -336,17 +336,23 @@ level_comb.pack(side="left", padx=5)
 Label(row1, text="搜索：", font=("微软雅黑",12)).pack(side="left", padx=2)
 search_entry = Entry(row1, width=18, font=("微软雅黑",12))
 search_entry.pack(side="left", padx=5)
-Button(row1, text="搜索", command=lambda: search_word()).pack(side="left")
+#Button(row1, text="搜索", command=lambda: search_word()).pack(side="left")
 
-# ====================== 第二行：导入 导出 模板下载（全部显示） ======================
+# 🔍 搜索按钮（放大镜图标）
+Button(row1, text="🔍", font=("微软雅黑", 12, "bold"), width=3,
+       command=lambda: search_word()).pack(side="left")
+
+# ====================== 第二行：图标按钮 ======================
 row2 = Frame(tab_table)
 row2.pack(fill="x", padx=20, pady=5)
 
-Button(row2, text="导出当前等级", bg="#4CAF50", fg="white",
+# 📥 导出 = 下载图标
+Button(row2, text="📥 导出", font=("微软雅黑", 11, "bold"),
        command=lambda: export_current_level_words(current_level_id.get(), current_level_name.get())
       ).pack(side="left", padx=5)
 
-Button(row2, text="导入单词", bg="#2196F3", fg="white",
+# 📤 导入 = 上传图标
+Button(row2, text="📤 导入", font=("微软雅黑", 11, "bold"),
        command=lambda: import_words_excel(current_level_id.get())
       ).pack(side="left", padx=5)
 
