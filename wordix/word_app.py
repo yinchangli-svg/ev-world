@@ -1,59 +1,38 @@
 import tkinter as tk
-from tkinter import ttk, Frame, Label, Button, Entry, Text, messagebox
+from tkinter import ttk, Frame, Label, Button, Entry, Text, messagebox, filedialog
 import sqlite3
+import pyttsx3
+import pandas as pd
+import os
 import random
-from datetime import date
 
 # ======================
-# 版本 v1.2.1 | 单词录入界面修复
+# 版本 v1.4 新增背诵+拼写测试
 # ======================
-VERSION = "v1.2.1 | 词根单词单机本地版 | 稳定完整版"
+VERSION = "v1.4 | Wordix单词单机版（背诵+拼写测试+发音+等级+导入导出）"
+DB_NAME = "wordix.db"
 
 # ======================
-# 统一数据库名
+# 初始化发音引擎
 # ======================
-DB_NAME = "wordapp.db"
+engine = pyttsx3.init()
+
+def speak_word(text):
+    if text.strip():
+        engine.say(text.strip())
+        engine.runAndWait()
 
 # ======================
 # 数据库初始化
 # ======================
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
+def init_database():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-
-    # 等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
-
-    # 前缀表
-    c.execute('''CREATE TABLE IF NOT EXISTS prefixes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    prefix TEXT NOT NULL UNIQUE,
-                    meaning TEXT,
-                    example TEXT
-                )''')
-
-    # 后缀表
-    c.execute('''CREATE TABLE IF NOT EXISTS suffixes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    suffix TEXT NOT NULL UNIQUE,
-                    meaning TEXT,
-                    example TEXT
-                )''')
-
-    # 词根表
-    c.execute('''CREATE TABLE IF NOT EXISTS roots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    root TEXT NOT NULL UNIQUE,
-                    meaning TEXT,
-                    example TEXT,
-                    note TEXT
-                )''')
-
-    # 单词表
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL UNIQUE,
@@ -62,571 +41,614 @@ def init_db():
                     pos TEXT,
                     meaning TEXT NOT NULL,
                     level_id INTEGER,
-                    prefix_id INTEGER,
-                    root_id INTEGER,
-                    suffix_id INTEGER,
                     example TEXT,
                     translation TEXT,
-                    FOREIGN KEY (level_id) REFERENCES levels(id),
-                    FOREIGN KEY (prefix_id) REFERENCES prefixes(id),
-                    FOREIGN KEY (root_id) REFERENCES roots(id),
-                    FOREIGN KEY (suffix_id) REFERENCES suffixes(id)
+                    FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
-
-    # 用户进度
-    c.execute('''CREATE TABLE IF NOT EXISTS user_progress (
-                    id INTEGER PRIMARY KEY DEFAULT 1,
-                    continuous_days INTEGER DEFAULT 0,
-                    total_points INTEGER DEFAULT 0
-                )''')
-
-    # 例句
-    c.execute('''CREATE TABLE IF NOT EXISTS examples (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    word_id INTEGER NOT NULL,
-                    en_sentence TEXT NOT NULL,
-                    cn_sentence TEXT NOT NULL,
-                    FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
-                )''')
-
-    # 每日学习
-    c.execute('''CREATE TABLE IF NOT EXISTS daily_study (
-                    study_date DATE PRIMARY KEY,
-                    target_count INTEGER DEFAULT 20,
-                    done_count INTEGER DEFAULT 0
-                )''')
-
-    # 单词掌握
-    c.execute('''CREATE TABLE IF NOT EXISTS word_mastery (
-                    word_id INTEGER PRIMARY KEY,
-                    is_mastered INTEGER DEFAULT 0,
-                    study_count INTEGER DEFAULT 0,
-                    wrong_count INTEGER DEFAULT 0,
-                    last_review DATE,
-                    FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
-                )''')
-
-    # 错题本
-    c.execute('''CREATE TABLE IF NOT EXISTS wrong_book (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    word_id INTEGER NOT NULL,
-                    wrong_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
-                )''')
-
-    # 勋章
-    c.execute('''CREATE TABLE IF NOT EXISTS medals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    condition TEXT NOT NULL,
-                    icon TEXT,
-                    is_unlocked INTEGER DEFAULT 0
-                )''')
-
-    # 初始化等级
     level_data = [
-        ('小学3-4年级', 10), ('小学5-6年级', 20), ('初中7-9年级', 30),
-        ('高中必修', 40), ('高中选择性必修', 50), ('大学四级', 60),
-        ('大学六级', 70), ('托福', 80), ('雅思', 90)
+        ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),
+        ('高中必修',40),('高中选择性必修',50),('大学四级',60),
+        ('大学六级',70),('托福',80),('雅思',90)
     ]
     for name, sort in level_data:
-        c.execute('INSERT OR IGNORE INTO levels (name, sort) VALUES (?,?)', (name, sort))
-
-    # 初始化前缀
-    prefix_data = [
-        ('un', '不', 'unhappy'), ('re', '重新', 'return'), ('dis', '否定', 'dislike'),
-        ('im', '不', 'impossible'), ('pre', '前', 'prepare'), ('post', '后', 'postwar')
-    ]
-    for p, m, e in prefix_data:
-        c.execute('INSERT OR IGNORE INTO prefixes (prefix, meaning, example) VALUES (?,?,?)', (p, m, e))
-
-    # 初始化后缀
-    suffix_data = [
-        ('able', '可...的', 'usable'), ('ful', '充满', 'helpful'), ('less', '无', 'hopeless'),
-        ('tion', '名词', 'action'), ('ment', '名词', 'development'), ('ly', '副词', 'quickly')
-    ]
-    for s, m, e in suffix_data:
-        c.execute('INSERT OR IGNORE INTO suffixes (suffix, meaning, example) VALUES (?,?,?)', (s, m, e))
-
-    # 初始化用户
-    c.execute('INSERT OR IGNORE INTO user_progress (id, continuous_days, total_points) VALUES (1,0,0)')
-
+        c.execute('''INSERT OR IGNORE INTO levels (name, sort)
+                      VALUES (?, ?)''', (name, sort))
     conn.commit()
     conn.close()
 
 # ======================
-# 工具函数
+# 工具函数（优化数据库连接，避免锁表）
 # ======================
-def get_level_list():
-    conn = sqlite3.connect(DB_NAME)
+def get_level_options():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT id, name FROM levels ORDER BY sort")
     data = c.fetchall()
     conn.close()
     return data
 
-def get_prefix_choices():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, prefix, meaning FROM prefixes")
-    data = c.fetchall()
-    conn.close()
-    return ["无"] + [f"{x[1]} ({x[2]})" for x in data]
-
-def get_root_choices():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, root, meaning FROM roots")
-    data = c.fetchall()
-    conn.close()
-    return ["无"] + [f"{x[1]} ({x[2]})" for x in data]
-
-def get_suffix_choices():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, suffix, meaning FROM suffixes")
-    data = c.fetchall()
-    conn.close()
-    return ["无"] + [f"{x[1]} ({x[2]})" for x in data]
-
-def get_level_id(name):
-    conn = sqlite3.connect(DB_NAME)
+def get_level_id_by_name(name):
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT id FROM levels WHERE name=?", (name,))
     res = c.fetchone()
     conn.close()
     return res[0] if res else None
 
-def get_id_from_choice(choices, value):
+def save_word_to_db(word_data):
     try:
-        idx = choices.index(value)
-        return idx if idx > 0 else None
-    except:
-        return None
-
-def save_root(root, meaning, example, note):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("INSERT INTO roots (root, meaning, example, note) VALUES (?,?,?,?)",
-                  (root, meaning, example, note))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-
-def load_all_roots():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT root, meaning, example FROM roots")
-    data = c.fetchall()
-    conn.close()
-    return data
-
-def save_word(word_data):
-    try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         c = conn.cursor()
         c.execute('''INSERT INTO words
-            (word, uk_phonetic, us_phonetic, pos, meaning, level_id, prefix_id, root_id, suffix_id, example, translation)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)''', word_data)
+                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation)
+                     VALUES (?,?,?,?,?,?,?,?)''', word_data)
         conn.commit()
-        conn.close()
         return True
     except sqlite3.IntegrityError:
         return False
-
-def load_all_words():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''SELECT w.word, w.meaning, l.name
-                 FROM words w LEFT JOIN levels l ON w.level_id = l.id''')
-    data = c.fetchall()
-    conn.close()
-    return data
-
-def get_random_word():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT id, word, meaning FROM words ORDER BY RANDOM() LIMIT 1')
-    word = c.fetchone()
-    conn.close()
-    return word
-
-def get_user_points():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    p = c.execute("SELECT total_points FROM user_progress WHERE id=1").fetchone()[0]
-    conn.close()
-    return p
-
-def add_points(p):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE user_progress SET total_points = total_points + ? WHERE id=1", (p,))
-    conn.commit()
-    conn.close()
-
-def add_wrong(word_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO wrong_book (word_id) VALUES (?)", (word_id,))
-    conn.commit()
-    conn.close()
-
-def generate_mask(word):
-    if len(word) <= 2:
-        return word[0] + "__"
-    return word[0] + "_" * (len(word) - 2) + word[-1]
-
-# ======================
-# 学习页
-# ======================
-class StudyPage:
-    def __init__(self, frame):
-        self.frame = frame
-        self.word_list = []
-        self.current_idx = -1
-        self.create_widgets()
-        self.load_words()
-        self.show_next()
-
-    def load_words(self):
-        try:
-            conn = sqlite3.connect(DB_NAME)
-            c = conn.cursor()
-            c.execute('''SELECT w.id, w.word, w.uk_phonetic, w.us_phonetic, w.pos, w.meaning,
-                        COALESCE(r.root, "无") FROM words w
-                        LEFT JOIN roots r ON w.root_id = r.id''')
-            self.word_list = c.fetchall()
-            conn.close()
-        except:
-            self.word_list = []
-
-    def create_widgets(self):
-        Label(self.frame, text="单词学习", font=("微软雅黑", 18, "bold")).pack(pady=20)
-        self.card = ttk.Frame(self.frame, padding=25, relief="ridge")
-        self.card.pack(padx=50, pady=15, fill="x")
-        self.lb_word = Label(self.card, font=("Arial", 30, "bold"))
-        self.lb_pho = Label(self.card, font=("Arial", 14))
-        self.lb_pos = Label(self.card, font=("微软雅黑", 16))
-        self.lb_mean = Label(self.card, font=("微软雅黑", 16), wraplength=600)
-        self.lb_root = Label(self.card, font=("微软雅黑", 13), fg="#165DFF")
-        for w in [self.lb_word, self.lb_pho, self.lb_pos, self.lb_mean, self.lb_root]:
-            w.pack(pady=2)
-        btn_box = Frame(self.frame)
-        btn_box.pack(pady=25)
-        ttk.Button(btn_box, text="上一词", command=self.show_prev).grid(row=0, column=0, padx=15)
-        ttk.Button(btn_box, text="已掌握", command=self.do_master).grid(row=0, column=1, padx=15)
-        ttk.Button(btn_box, text="下一词", command=self.show_next).grid(row=0, column=2, padx=15)
-
-    def show(self, word):
-        _id, w, uk, us, pos, m, r = word
-        self.lb_word.config(text=w)
-        pho = f"英 /{uk}/ " if uk else ""
-        pho += f"美 /{us}/" if us else ""
-        self.lb_pho.config(text=pho.strip())
-        self.lb_pos.config(text=pos or "")
-        self.lb_mean.config(text=m)
-        self.lb_root.config(text=f"词根：{r}")
-
-    def show_next(self):
-        if not self.word_list:
-            messagebox.showinfo("提示", "请先添加单词！")
-            return
-        self.current_idx = (self.current_idx + 1) % len(self.word_list)
-        self.show(self.word_list[self.current_idx])
-
-    def show_prev(self):
-        if not self.word_list:
-            messagebox.showinfo("提示", "请先添加单词！")
-            return
-        self.current_idx = (self.current_idx - 1) % len(self.word_list)
-        self.show(self.word_list[self.current_idx])
-
-    def do_master(self):
-        if not self.word_list:
-            return
-        word_id = self.word_list[self.current_idx][0]
-        today = str(date.today())
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('INSERT OR IGNORE INTO word_mastery (word_id) VALUES (?)', (word_id,))
-        c.execute('UPDATE word_mastery SET is_mastered=1, study_count=study_count+1, last_review=? WHERE word_id=?', (today, word_id))
-        conn.commit()
+    finally:
         conn.close()
-        messagebox.showinfo("成功", "已标记为已掌握")
-        self.show_next()
+
+def load_words_by_level_and_page(level_id, page_num, page_size=10):
+    offset = (page_num - 1) * page_size
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, w.meaning, l.name
+                 FROM words w
+                 LEFT JOIN levels l ON w.level_id = l.id
+                 WHERE w.level_id=?
+                 LIMIT ? OFFSET ?''', (level_id, page_size, offset))
+    data = c.fetchall()
+    c.execute('''SELECT COUNT(*) FROM words WHERE level_id=?''', (level_id,))
+    total = c.fetchone()[0]
+    total_page = (total + page_size - 1) // page_size
+    conn.close()
+    return data, total, total_page
+
+def search_word_in_db_by_level(level_id, word):
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, w.meaning, l.name
+                 FROM words w
+                 LEFT JOIN levels l ON w.level_id = l.id
+                 WHERE w.level_id=? AND w.word=?''', (level_id, word))
+    res = c.fetchone()
+    conn.close()
+    return res
+
+# 【v1.4新增】获取当前等级所有单词（背诵/拼写测试用）
+def get_all_words_by_level(level_id):
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
+                 FROM words WHERE level_id=?''', (level_id,))
+    all_words = c.fetchall()
+    conn.close()
+    return all_words
 
 # ======================
-# 练习页
+# 导入导出核心函数
 # ======================
-class PracticePage:
-    def __init__(self, frame):
-        self.frame = frame
-        self.current_word = None
-        self.current_id = None
-        self.answer = tk.StringVar()
-        self.create_widgets()
-        self.next_question()
+def export_current_level_words(level_id, level_name):
+    try:
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        df = pd.read_sql(f"""
+            SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
+            FROM words WHERE level_id = {level_id}
+        """, conn)
 
-    def create_widgets(self):
-        Label(self.frame, text="单词练习 · 字母填空", font=("微软雅黑", 18, "bold")).pack(pady=15)
-        self.points_label = Label(self.frame, text=f"当前积分：{get_user_points()}", font=("微软雅黑", 13))
-        self.points_label.pack(pady=5)
-        self.q_frame = ttk.Frame(self.frame, padding=25, relief="ridge")
-        self.q_frame.pack(padx=60, pady=20, fill="x")
-        self.meaning_label = Label(self.q_frame, font=("微软雅黑", 16), wraplength=600)
-        self.meaning_label.pack(pady=8)
-        self.mask_label = Label(self.q_frame, font=("Arial", 22, "bold"))
-        self.mask_label.pack(pady=10)
-        self.entry_ans = Entry(self.q_frame, textvariable=self.answer, font=("Arial", 16), width=12)
-        self.entry_ans.pack(pady=8)
-        ttk.Button(self.frame, text="提交答案", command=self.check_answer).pack(pady=8)
-        self.result_label = Label(self.frame, font=("微软雅黑", 14))
-        self.result_label.pack(pady=5)
-
-    def next_question(self):
-        self.answer.set("")
-        self.result_label.config(text="")
-        word = get_random_word()
-        if not word:
-            self.meaning_label.config(text="⚠️ 请先去单词录入添加单词！")
-            self.mask_label.config(text="")
-            self.entry_ans.config(state="disabled")
+        if df.empty:
+            messagebox.showwarning("提示", "当前等级暂无单词可导出")
             return
-        self.entry_ans.config(state="normal")
-        self.current_id, self.current_word, meaning = word
-        self.meaning_label.config(text=f"释义：{meaning}")
-        self.mask_label.config(text=generate_mask(self.current_word))
-        self.points_label.config(text=f"当前积分：{get_user_points()}")
 
-    def check_answer(self):
-        if not self.current_word:
-            messagebox.showinfo("提示", "请先录入单词！")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel 文件", "*.xlsx")],
+            initialfile=f"{level_name}_单词导出.xlsx"
+        )
+        if not path:
             return
-        user_ans = self.answer.get().strip().lower()
-        correct = self.current_word.lower()
-        if user_ans == correct:
-            self.result_label.config(text="✅ 正确！+5分", fg="green")
-            add_points(5)
-        else:
-            self.result_label.config(text=f"❌ 错误：{self.current_word}", fg="red")
-            add_wrong(self.current_id)
-        self.frame.after(1000, self.next_question)
+
+        df.to_excel(path, index=False)
+        messagebox.showinfo("成功", f"已导出 {len(df)} 个单词！")
+    except Exception as e:
+        messagebox.showerror("错误", f"导出失败：{str(e)}")
+    finally:
+        conn.close()
+
+def download_import_template():
+    template = {
+        "word": ["apple"],
+        "uk_phonetic": ["ˈæpl"],
+        "us_phonetic": ["ˈæpl"],
+        "pos": ["n."],
+        "meaning": ["苹果"],
+        "example": ["This is an apple."],
+        "translation": ["这是一个苹果。"]
+    }
+    df = pd.DataFrame(template)
+    path = filedialog.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel 模板", "*.xlsx")],
+        initialfile="单词导入模板.xlsx"
+    )
+    if path:
+        df.to_excel(path, index=False)
+        messagebox.showinfo("成功", "导入模板已下载完成！")
+
+def import_words_excel(level_id):
+    path = filedialog.askopenfilename(
+        filetypes=[("Excel 文件", "*.xlsx;*.xls")]
+    )
+    if not path:
+        return
+
+    try:
+        df = pd.read_excel(path)
+        required = {"word", "meaning"}
+        if not required.issubset(df.columns):
+            messagebox.showerror("错误", "模板错误！必须包含 word 和 meaning 列")
+            return
+
+        success = 0
+        fail = 0
+        for _, row in df.iterrows():
+            word = str(row["word"]).strip()
+            meaning = str(row["meaning"]).strip()
+            if not word or not meaning:
+                fail += 1
+                continue
+
+            data = (
+                word,
+                str(row.get("uk_phonetic", "")).strip(),
+                str(row.get("us_phonetic", "")).strip(),
+                str(row.get("pos", "")).strip(),
+                meaning,
+                level_id,
+                str(row.get("example", "")).strip(),
+                str(row.get("translation", "")).strip()
+            )
+            if save_word_to_db(data):
+                success += 1
+            else:
+                fail += 1
+
+        messagebox.showinfo("导入完成", f"成功：{success} 个\n重复/失败：{fail} 个")
+        refresh_words()
+    except Exception as e:
+        messagebox.showerror("错误", f"导入失败：{str(e)}")
 
 # ======================
-# 主界面
+# 主窗口初始化
 # ======================
-init_db()
+init_database()
 root = tk.Tk()
-root.title(f"词根单词 · {VERSION}")
-root.geometry("920x720")
+root.title(f"Wordix 词根单词学习 · {VERSION}")
+root.geometry("960x760")
 root.resizable(False, False)
 
-# 样式
 style = ttk.Style()
-style.configure("Big.TButton", font=("微软雅黑", 13, "bold"), padding=10)
+style.configure("Big.TButton", font=("微软雅黑",13,"bold"), padding=12)
+style.configure("Mid.TButton", font=("微软雅黑",11), padding=6)
 
-tab = ttk.Notebook(root)
-tab.pack(expand=1, fill="both", padx=10,pady=10)
+tab_control = ttk.Notebook(root)
+tab_control.pack(expand=1, fill="both", padx=10, pady=10)
 
-# 1 首页
-home = ttk.Frame(tab)
-tab.add(home, text="首页")
-Label(home, text="🔥 词根单词单机版", font=("微软雅黑",20,"bold")).pack(pady=100)
-Label(home, text=VERSION, font=("微软雅黑",12)).pack()
+# ==============================================
+# 全局等级变量
+# ==============================================
+level_list = get_level_options()
+level_ids = [item[0] for item in level_list]
+level_names = [item[1] for item in level_list]
 
-# 2 学习页
-study_frame = ttk.Frame(tab)
-tab.add(study_frame, text="开始学习")
-study = StudyPage(study_frame)
+current_level_id = tk.IntVar(value=level_ids[0] if level_ids else 0)
+current_level_name = tk.StringVar(value=level_names[0] if level_names else "")
 
-# 3 练习页
-practice_frame = ttk.Frame(tab)
-tab.add(practice_frame, text="单词练习")
-practice = PracticePage(practice_frame)
+# 分页全局变量
+current_page = 1
+page_size = 10
 
-# 4 单词录入
-add_f = ttk.Frame(tab)
-tab.add(add_f, text="单词录入")
-Label(add_f, text="单词录入", font=("微软雅黑",18,"bold")).pack(pady=10)
-f = Frame(add_f)
-f.pack(padx=50)
+# ==============================================
+# 1. 首页 Tab
+# ==============================================
+tab_home = ttk.Frame(tab_control)
+tab_control.add(tab_home, text="首页")
+Label(tab_home, text="🔥 Wordix 词根单词学习系统", font=("微软雅黑",22,"bold")).pack(pady=30)
+Label(tab_home, text=VERSION, font=("微软雅黑",12)).pack(pady=5)
+tips = """功能清单：
+1. 单词录入：录入音标、词性、例句，按等级分类存储
+2. 词库管理：搜索、分页、Excel导入导出、下载模板
+3. 单词背诵：随机翻卡记忆，看单词背释义
+4. 拼写测试：释义自测拼写，统计正确率
+全部数据本地SQLite存储，无需联网"""
+Label(tab_home, text=tips, font=("微软雅黑",11), justify="left").pack(pady=20)
 
-entry_word = Entry(f, width=30)
-entry_uk = Entry(f, width=30)
-entry_us = Entry(f, width=30)
-entry_pos = Entry(f, width=30)
-entry_mean = Entry(f, width=30)
+# ==============================================
+# 2. 单词录入 Tab
+# ==============================================
+tab_add_word = ttk.Frame(tab_control)
+tab_control.add(tab_add_word, text="单词录入")
 
-level_names = [n for _, n in get_level_list()]
-level_var = tk.StringVar(value=level_names[0] if level_names else "")
-prefix_var = tk.StringVar(value="无")
-root_var = tk.StringVar(value="无")
-suffix_var = tk.StringVar(value="无")
+Label(tab_add_word, text="单词录入", font=("微软雅黑",16,"bold")).pack(pady=15)
+f = Frame(tab_add_word)
+f.pack(padx=40)
 
-cb_level = ttk.Combobox(f, textvariable=level_var, values=level_names, width=27, state="readonly")
-cb_prefix = ttk.Combobox(f, textvariable=prefix_var, values=get_prefix_choices(), width=27, state="readonly")
-cb_root = ttk.Combobox(f, textvariable=root_var, values=get_root_choices(), width=27, state="readonly")
-cb_suffix = ttk.Combobox(f, textvariable=suffix_var, values=get_suffix_choices(), width=27, state="readonly")
+entry_word = Entry(f, width=30, font=("微软雅黑",11))
+entry_uk = Entry(f, width=30, font=("微软雅黑",11))
+entry_us = Entry(f, width=30, font=("微软雅黑",11))
+entry_pos = Entry(f, width=30, font=("微软雅黑",11))
+entry_meaning = Entry(f, width=30, font=("微软雅黑",11))
 
-# ======================
-# 修复：字段完全对齐
-# ======================
+cb_level = ttk.Combobox(f, textvariable=current_level_name, values=level_names, width=27, state="readonly")
+cb_level.configure(state="disabled")
+
+btn_speak = Button(f, text="🔊 朗读单词", font=("微软雅黑",10,"bold"),
+                   command=lambda: speak_word(entry_word.get()))
+
 rows = [
     ("单词：", entry_word),
     ("英音标：", entry_uk),
     ("美音标：", entry_us),
     ("词性：", entry_pos),
-    ("中文释义：", entry_mean),
+    ("中文释义：", entry_meaning),
     ("等级：", cb_level),
-    ("前缀：", cb_prefix),
-    ("词根：", cb_root),
-    ("后缀：", cb_suffix),
 ]
 
 for i, (t, e) in enumerate(rows):
-    Label(f, text=t, width=10, anchor="e").grid(row=i, column=0, pady=5)
-    e.grid(row=i, column=1, pady=5)
+    Label(f, text=t, width=10, anchor="e", font=("微软雅黑",11)).grid(row=i, column=0, pady=6)
+    e.grid(row=i, column=1, pady=6)
 
-# 例句和翻译使用正确行号
-Label(f, text="英文例句：").grid(row=9, column=0, sticky="ne", pady=4)
-text_en = Text(f, width=28, height=2)
-text_en.grid(row=9, column=1, pady=4)
+btn_speak.grid(row=0, column=2, padx=10, pady=6)
 
-Label(f, text="中文翻译：").grid(row=10, column=0, sticky="ne", pady=4)
-text_cn = Text(f, width=28, height=2)
-text_cn.grid(row=10, column=1, pady=4)
+Label(f, text="英文例句：", font=("微软雅黑",11)).grid(row=10, column=0, sticky="ne", pady=6)
+txt_example = Text(f, width=28, height=3, font=("微软雅黑",10))
+txt_example.grid(row=10, column=1, pady=6)
 
-def do_save_word():
+Label(f, text="中文翻译：", font=("微软雅黑",11)).grid(row=11, column=0, sticky="ne", pady=6)
+txt_trans = Text(f, width=28, height=3, font=("微软雅黑",10))
+txt_trans.grid(row=11, column=1, pady=6)
+
+def save_word():
     word = entry_word.get().strip()
-    uk = entry_uk.get().strip()
-    us = entry_us.get().strip()
-    pos = entry_pos.get().strip()
-    meaning = entry_mean.get().strip()
-    level_name = level_var.get()
-    prefix_val = prefix_var.get()
-    root_val = root_var.get()
-    suffix_val = suffix_var.get()
-    ex = text_en.get("1.0", tk.END).strip()
-    trans = text_cn.get("1.0", tk.END).strip()
-
+    meaning = entry_meaning.get().strip()
     if not word or not meaning:
-        messagebox.showwarning("提示", "单词和释义不能为空")
+        messagebox.showwarning("提示","单词和释义不能为空")
         return
 
-    level_id = get_level_id(level_name)
-    prefix_id = get_id_from_choice(get_prefix_choices(), prefix_val)
-    root_id = get_id_from_choice(get_root_choices(), root_val)
-    suffix_id = get_id_from_choice(get_suffix_choices(), suffix_val)
+    level_id = current_level_id.get()
+    data = (
+        word,
+        entry_uk.get().strip(),
+        entry_us.get().strip(),
+        entry_pos.get().strip(),
+        meaning,
+        level_id,
+        txt_example.get("1.0", tk.END).strip(),
+        txt_trans.get("1.0", tk.END).strip()
+    )
 
-    data = (word, uk, us, pos, meaning, level_id, prefix_id, root_id, suffix_id, ex, trans)
-    if save_word(data):
-        messagebox.showinfo("成功", "单词保存成功")
-        study.load_words()
+    if save_word_to_db(data):
+        messagebox.showinfo("成功",f"单词已保存到：{current_level_name.get()}")
+        entry_word.delete(0,tk.END)
+        entry_uk.delete(0,tk.END)
+        entry_us.delete(0,tk.END)
+        entry_pos.delete(0,tk.END)
+        entry_meaning.delete(0,tk.END)
+        txt_example.delete("1.0",tk.END)
+        txt_trans.delete("1.0",tk.END)
         refresh_words()
-        # 清空输入
-        entry_word.delete(0, tk.END)
-        entry_uk.delete(0, tk.END)
-        entry_us.delete(0, tk.END)
-        entry_pos.delete(0, tk.END)
-        entry_mean.delete(0, tk.END)
-        text_en.delete("1.0", tk.END)
-        text_cn.delete("1.0", tk.END)
     else:
-        messagebox.showerror("失败", "单词已存在")
+        messagebox.showerror("失败","单词已存在")
 
-ttk.Button(add_f, text="保存单词", command=do_save_word, style="Big.TButton").pack(pady=12)
+ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
 
 # ==============================================
-# 词根录入
+# 3. 词库管理 Tab（修复Treeview增加音标列）
 # ==============================================
-tab_add_root = ttk.Frame(tab)
-tab.add(tab_add_root, text="词根录入")
+tab_table = ttk.Frame(tab_control)
+tab_control.add(tab_table, text="词库管理")
 
-Label(tab_add_root, text="词根录入", font=("微软雅黑",16,"bold")).pack(pady=15)
-frm = Frame(tab_add_root)
-frm.pack(padx=40)
+Label(tab_table, text="词库管理", font=("微软雅黑",16,"bold")).pack(pady=5)
 
-e_root = Entry(frm, width=30)
-e_meaning = Entry(frm, width=30)
-e_example = Entry(frm, width=30)
-txt_note = Text(frm, width=28, height=3)
+# 第一行：等级 + 搜索
+row1 = Frame(tab_table)
+row1.pack(fill="x", padx=20, pady=2)
+Label(row1, text="等级：", font=("微软雅黑",12)).pack(side="left", padx=2)
+level_comb = ttk.Combobox(row1, textvariable=current_level_name, values=level_names, width=18, state="readonly")
+level_comb.pack(side="left", padx=5)
 
-fields = [
-    ("词根：", e_root),
-    ("含义：", e_meaning),
-    ("例词：", e_example),
-    ("备注：", txt_note),
-]
+Label(row1, text="搜索：", font=("微软雅黑",12)).pack(side="left", padx=2)
+search_entry = Entry(row1, width=18, font=("微软雅黑",12))
+search_entry.pack(side="left", padx=5)
 
-for i, (t, w) in enumerate(fields):
-    Label(frm, text=t, width=8, anchor="e").grid(row=i, column=0, pady=6)
-    w.grid(row=i, column=1, pady=6)
+Button(row1, text="🔍", font=("微软雅黑", 12, "bold"), width=3,
+       command=lambda: search_word()).pack(side="left")
 
-def do_save_root():
-    r = e_root.get().strip()
-    m = e_meaning.get().strip()
-    ex = e_example.get().strip()
-    note = txt_note.get("1.0", tk.END).strip()
-    if not r or not m:
-        messagebox.showwarning("提示","词根和含义不能为空")
+# 第二行：导入导出模板按钮
+row2 = Frame(tab_table)
+row2.pack(fill="x", padx=20, pady=5)
+
+Button(row2, text="📥 导出", font=("微软雅黑", 11, "bold"),
+       command=lambda: export_current_level_words(current_level_id.get(), current_level_name.get())
+      ).pack(side="left", padx=5)
+
+Button(row2, text="📤 导入", font=("微软雅黑", 11, "bold"),
+       command=lambda: import_words_excel(current_level_id.get())
+      ).pack(side="left", padx=5)
+
+lbl_temp = Label(row2, text="下载导入模板", fg="blue", cursor="hand2", font=("微软雅黑",10,"underline"))
+lbl_temp.pack(side="left", padx=5)
+lbl_temp.bind("<Button-1>", lambda e: download_import_template())
+
+# 等级切换事件
+def on_level_change(event):
+    idx = level_comb.current()
+    current_level_id.set(level_ids[idx])
+    global current_page
+    current_page = 1
+    refresh_words()
+
+level_comb.bind("<<ComboboxSelected>>", on_level_change)
+
+# 搜索逻辑
+def search_word():
+    keyword = search_entry.get().strip()
+    if not keyword:
+        refresh_words()
         return
-    if save_root(r,m,ex,note):
-        messagebox.showinfo("成功","词根已保存")
-        e_root.delete(0,tk.END)
-        e_meaning.delete(0,tk.END)
-        e_example.delete(0,tk.END)
-        txt_note.delete("1.0",tk.END)
-        refresh_roots()
-        cb_root.config(values=get_root_choices())
+    res = search_word_in_db_by_level(current_level_id.get(), keyword)
+    if res:
+        tree.delete(*tree.get_children())
+        tree.insert("", "end", values=res)
+        tree.selection_set(tree.get_children()[0])
+        messagebox.showinfo("查找成功", f"找到单词：{keyword}")
     else:
-        messagebox.showerror("失败","词根已存在")
+        messagebox.showwarning("未找到", "该等级下无此单词")
 
-ttk.Button(tab_add_root, text="保存词根", style="Big.TButton", command=do_save_root).pack(pady=15)
+search_entry.bind("<Return>", lambda e: search_word())
 
-# ==============================================
-# 词根列表
-# ==============================================
-tab_root_list = ttk.Frame(tab)
-tab.add(tab_root_list, text="词根列表")
-
-Label(tab_root_list, text="词根管理", font=("微软雅黑",16,"bold")).pack(pady=15)
-tree_root = ttk.Treeview(tab_root_list, columns=("root","mean","ex"), show="headings", height=15)
-tree_root.heading("root", text="词根")
-tree_root.heading("mean", text="含义")
-tree_root.heading("ex", text="例词")
-tree_root.column("root", width=120)
-tree_root.column("mean", width=200)
-tree_root.column("ex", width=300)
-tree_root.pack(padx=20, pady=10, fill="x")
-
-def refresh_roots():
-    tree_root.delete(*tree_root.get_children())
-    for row in load_all_roots():
-        tree_root.insert("", "end", values=row)
-
-refresh_roots()
-
-# 词库管理
-tab_f = ttk.Frame(tab)
-tab.add(tab_f, text="词库管理")
-tree = ttk.Treeview(tab_f, columns=("w", "m", "l"), show="headings", height=15)
+# 单词列表（新增英/美音标列）
+tree = ttk.Treeview(tab_table, columns=("w","uk","us","m","l"), show="headings", height=15)
 tree.heading("w", text="单词")
+tree.heading("uk", text="英音")
+tree.heading("us", text="美音")
 tree.heading("m", text="释义")
 tree.heading("l", text="等级")
-tree.column("w", width=160)
-tree.column("m", width=420)
-tree.column("l", width=140)
-tree.pack(padx=20, pady=15, fill="x")
+tree.column("w", width=120)
+tree.column("uk", width=90)
+tree.column("us", width=90)
+tree.column("m", width=300)
+tree.column("l", width=120)
+tree.pack(padx=20, pady=10, fill="x")
 
+# 分页控件
+page_frame = Frame(tab_table)
+page_frame.pack(fill="x", padx=20, pady=5)
+page_label = Label(page_frame, text="第 1 页", font=("微软雅黑",11))
+page_label.pack(side="left", padx=10)
+
+def prev_page():
+    global current_page
+    if current_page > 1:
+        current_page -= 1
+        refresh_words()
+
+def next_page():
+    _, _, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
+    if current_page < total_page:
+        current_page += 1
+        refresh_words()
+
+btn_prev = Button(page_frame, text="上一页", command=prev_page, width=10)
+btn_prev.pack(side="left", padx=5)
+btn_next = Button(page_frame, text="下一页", command=next_page, width=10)
+btn_next.pack(side="left", padx=5)
+
+# 双击单词朗读
+def on_tree_click(event):
+    item = tree.selection()
+    if item:
+        word = tree.item(item[0], "values")[0]
+        speak_word(word)
+tree.bind("<Double-1>", on_tree_click)
+tree.bind("<Return>", on_tree_click)
+
+# 刷新列表
 def refresh_words():
+    data, total, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
     tree.delete(*tree.get_children())
-    for row in load_all_words():
+    for row in data:
         tree.insert("", "end", values=row)
+    page_label.config(text=f"第 {current_page}/{total_page} 页 | 本等级：{total} 个")
 
 refresh_words()
+Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持Excel", font=("微软雅黑",11)).pack()
 
+# ==============================================
+# 【v1.4 新增4. 单词背诵 Tab（记忆模式）】
+# ==============================================
+tab_memorize = ttk.Frame(tab_control)
+tab_control.add(tab_memorize, text="单词背诵")
+
+# 背诵全局变量
+mem_word_list = []
+current_mem_word = None
+is_show_detail = tk.BooleanVar(value=False)
+
+# 顶部标题
+Label(tab_memorize, text="随机单词背诵卡", font=("微软雅黑",16,"bold")).pack(pady=10)
+
+# 卡片主显示区
+card_frame = Frame(tab_memorize, bd=2, relief="solid", width=800, height=380)
+card_frame.pack(padx=30, pady=10, fill="x")
+card_frame.pack_propagate(False)
+
+# 单词大字
+lbl_mem_word = Label(card_frame, text="请点击「下一个单词」", font=("微软雅黑",30,"bold"), wraplength=750)
+lbl_mem_word.pack(pady=40)
+
+# 详情区域（音标/释义/例句，默认隐藏）
+detail_frame = Frame(card_frame)
+lbl_uk = Label(detail_frame, text="英音：", font=("微软雅黑",12))
+lbl_us = Label(detail_frame, text="美音：", font=("微软雅黑",12))
+lbl_pos = Label(detail_frame, text="词性：", font=("微软雅黑",12))
+lbl_mean = Label(detail_frame, text="释义：", font=("微软雅黑",12))
+lbl_ex = Label(detail_frame, text="例句：", font=("微软雅黑",11), wraplength=720)
+lbl_trans = Label(detail_frame, text="例句翻译：", font=("微软雅黑",11), wraplength=720)
+
+def refresh_memorize_card():
+    global mem_word_list, current_mem_word
+    # 加载当前等级全部单词
+    mem_word_list = get_all_words_by_level(current_level_id.get())
+    if not mem_word_list:
+        lbl_mem_word.config(text="当前等级无单词，请先录入！")
+        detail_frame.pack_forget()
+        return
+    # 随机取词
+    current_mem_word = random.choice(mem_word_list)
+    word, uk, us, pos, mean, ex, trans = current_mem_word
+    # 重置为只显示单词
+    is_show_detail.set(False)
+    lbl_mem_word.config(text=word)
+    detail_frame.pack_forget()
+
+def flip_card():
+    if not current_mem_word:
+        return
+    word, uk, us, pos, mean, ex, trans = current_mem_word
+    if is_show_detail.get():
+        # 隐藏详情
+        is_show_detail.set(False)
+        lbl_mem_word.config(text=word)
+        detail_frame.pack_forget()
+    else:
+        # 展示全部详情
+        is_show_detail.set(True)
+        lbl_mem_word.config(text=word)
+        lbl_uk.config(text=f"英音：{uk}")
+        lbl_us.config(text=f"美音：{us}")
+        lbl_pos.config(text=f"词性：{pos}")
+        lbl_mean.config(text=f"释义：{mean}")
+        lbl_ex.config(text=f"例句：{ex}")
+        lbl_trans.config(text=f"翻译：{trans}")
+        detail_frame.pack(pady=10)
+        lbl_uk.pack()
+        lbl_us.pack()
+        lbl_pos.pack()
+        lbl_mean.pack()
+        lbl_ex.pack(pady=3)
+        lbl_trans.pack(pady=3)
+
+def speak_mem_word():
+    if current_mem_word:
+        speak_word(current_mem_word[0])
+
+# 按钮区
+mem_btn_frame = Frame(tab_memorize)
+mem_btn_frame.pack(pady=10)
+ttk.Button(mem_btn_frame, text="🔊 朗读单词", style="Mid.TButton", command=speak_mem_word).grid(row=0,column=0,padx=8)
+ttk.Button(mem_btn_frame, text="翻面查看释义", style="Mid.TButton", command=flip_card).grid(row=0,column=1,padx=8)
+ttk.Button(mem_btn_frame, text="下一个单词", style="Mid.TButton", command=refresh_memorize_card).grid(row=0,column=2,padx=8)
+
+Label(tab_memorize, text="操作提示：切换上方等级可更换背诵词库", font=("微软雅黑",10)).pack(pady=5)
+
+# 初始化背诵卡片
+refresh_memorize_card()
+
+# ==============================================
+# 【v1.4 新增5. 拼写测试 Tab（听写自测）】
+# ==============================================
+tab_spell = ttk.Frame(tab_control)
+tab_control.add(tab_spell, text="拼写测试")
+
+# 拼写测试全局变量
+spell_word_pool = []
+current_spell_word = None
+correct_count = 0
+wrong_count = 0
+
+Label(tab_spell, text="释义拼写自测", font=("微软雅黑",16,"bold")).pack(pady=10)
+
+# 题目展示
+spell_card = Frame(tab_spell, bd=2, relief="solid", width=850, height=220)
+spell_card.pack(padx=20, pady=10, fill="x")
+spell_card.pack_propagate(False)
+lbl_spell_mean = Label(spell_card, text="点击「开始测试」加载单词", font=("微软雅黑",16), wraplength=800)
+lbl_spell_mean.pack(pady=60)
+
+# 输入框区域
+spell_input_frame = Frame(tab_spell)
+spell_input_frame.pack(pady=10)
+Label(spell_input_frame, text="请输入单词：", font=("微软雅黑",12)).grid(row=0,column=0)
+entry_spell = Entry(spell_input_frame, width=35, font=("微软雅黑",14))
+entry_spell.grid(row=0,column=1,padx=10)
+
+# 结果提示
+lbl_spell_result = Label(tab_spell, text="", font=("微软雅黑",13,"bold"))
+lbl_spell_result.pack(pady=5)
+
+# 统计文本
+lbl_spell_stat = Label(tab_spell, text=f"正确：{correct_count} | 错误：{wrong_count}", font=("微软雅黑",11))
+lbl_spell_stat.pack(pady=3)
+
+# 逻辑函数
+def load_spell_words():
+    global spell_word_pool, current_spell_word
+    spell_word_pool = get_all_words_by_level(current_level_id.get())
+    if not spell_word_pool:
+        lbl_spell_mean.config(text="当前等级无单词，请先录入！")
+        return False
+    pick_next_spell()
+    return True
+
+def pick_next_spell():
+    global current_spell_word
+    current_spell_word = random.choice(spell_word_pool)
+    _, _, _, _, mean, _, _ = current_spell_word
+    lbl_spell_mean.config(text=f"释义：{mean}")
+    entry_spell.delete(0, tk.END)
+    lbl_spell_result.config(text="")
+
+def check_spell_answer():
+    global correct_count, wrong_count
+    if not current_spell_word:
+        messagebox.showinfo("提示", "请先点击开始测试")
+        return
+    user_input = entry_spell.get().strip().lower()
+    real_word = current_spell_word[0].lower()
+    if user_input == real_word:
+        correct_count += 1
+        lbl_spell_result.config(text="✅ 拼写正确！", fg="green")
+    else:
+        wrong_count += 1
+        lbl_spell_result.config(text=f"❌ 错误，正确单词：{current_spell_word[0]}", fg="red")
+    # 更新统计
+    lbl_spell_stat.config(text=f"正确：{correct_count} | 错误：{wrong_count}")
+    # 自动切换下一题
+    root.after(1200, pick_next_spell)
+
+def reset_spell_stat():
+    global correct_count, wrong_count
+    correct_count = 0
+    wrong_count = 0
+    lbl_spell_stat.config(text=f"正确：{correct_count} | 错误：{wrong_count}")
+    lbl_spell_result.config(text="")
+
+# 按钮区
+spell_btn_frame = Frame(tab_spell)
+spell_btn_frame.pack(pady=10)
+ttk.Button(spell_btn_frame, text="开始测试", style="Mid.TButton", command=load_spell_words).grid(row=0,column=0,padx=6)
+ttk.Button(spell_btn_frame, text="提交答案", style="Mid.TButton", command=check_spell_answer).grid(row=0,column=1,padx=6)
+ttk.Button(spell_btn_frame, text="重置统计", style="Mid.TButton", command=reset_spell_stat).grid(row=0,column=2,padx=6)
+ttk.Button(spell_btn_frame, text="朗读标准答案", style="Mid.TButton", command=lambda: speak_word(current_spell_word[0] if current_spell_word else "")).grid(row=0,column=3,padx=6)
+
+# 回车提交答案
+entry_spell.bind("<Return>", lambda e: check_spell_answer())
+
+Label(tab_spell, text="提示：切换上方等级后重新点击「开始测试」更换题库", font=("微软雅黑",10)).pack(pady=5)
+
+# ======================
+# 主循环启动
+# ======================
 root.mainloop()
