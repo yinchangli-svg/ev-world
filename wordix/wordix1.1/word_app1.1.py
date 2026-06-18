@@ -12,7 +12,7 @@ DB_NAME = "word_app_v1_1.db"
 # 数据库初始化（安全、不删表、不丢数据）
 # ======================
 def init_database():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
     # 等级表
@@ -121,7 +121,7 @@ def init_database():
 # 工具函数
 # ======================
 def get_level_options():
-    conn = sqlite3.connect("words1.1.db")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, name FROM levels ORDER BY sort")
     data = c.fetchall()
@@ -129,7 +129,7 @@ def get_level_options():
     return data  # [(id,name), ...]
 
 def get_prefix_choices():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, prefix, meaning FROM prefixes")
     data = c.fetchall()
@@ -137,7 +137,7 @@ def get_prefix_choices():
     return ["无"] + [f"{x[1]} ({x[2]})" for x in data]
 
 def get_root_choices():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, root, meaning FROM roots")
     data = c.fetchall()
@@ -145,7 +145,7 @@ def get_root_choices():
     return ["无"] + [f"{x[1]} ({x[2]})" for x in data]
 
 def get_suffix_choices():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, suffix, meaning FROM suffixes")
     data = c.fetchall()
@@ -154,7 +154,7 @@ def get_suffix_choices():
 
 # 等级名称 → ID
 def get_level_id_by_name(name):
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id FROM levels WHERE name=?", (name,))
     res = c.fetchone()
@@ -164,7 +164,7 @@ def get_level_id_by_name(name):
 # 保存单词（真正写入）
 def save_word_to_db(word_data):
     try:
-        conn = sqlite3.connect("DB_NAME")
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute('''INSERT INTO words
                      (word, uk_phonetic, us_phonetic, pos, meaning, level_id, prefix_id, root_id, suffix_id, example, translation)
@@ -178,7 +178,7 @@ def save_word_to_db(word_data):
 # 保存词根
 def save_root(root, meaning, example, note):
     try:
-        conn = sqlite3.connect("DB_NAME")
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("INSERT INTO roots (root,meaning,example,note) VALUES (?,?,?,?)",
                   (root, meaning, example, note))
@@ -190,7 +190,7 @@ def save_root(root, meaning, example, note):
 
 # 加载所有词根
 def load_all_roots():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT root, meaning, example FROM roots")
     data = c.fetchall()
@@ -199,7 +199,7 @@ def load_all_roots():
 
 # 加载所有单词（关联等级名称，不显示ID）
 def load_all_words():
-    conn = sqlite3.connect("DB_NAME")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''SELECT w.word, w.meaning, l.name
                  FROM words w
