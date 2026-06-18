@@ -7,9 +7,9 @@ import os
 import random
 
 # ======================
-# 版本 v1.4 新增背诵+拼写测试
+# 版本 v1.4.1 有序翻页背诵+拼写、单次计分
 # ======================
-VERSION = "v1.4 | Wordix单词单机版（背诵+拼写测试+发音+等级+导入导出）"
+VERSION = "v1.4.1 | Wordix单词单机版（有序翻页背诵+拼写测试+单次计分+发音+等级+导入导出）"
 DB_NAME = "wordix.db"
 
 # ======================
@@ -259,8 +259,8 @@ Label(tab_home, text=VERSION, font=("微软雅黑",12)).pack(pady=5)
 tips = """功能清单：
 1. 单词录入：录入音标、词性、例句，按等级分类存储
 2. 词库管理：搜索、分页、Excel导入导出、下载模板
-3. 单词背诵：随机翻卡记忆，看单词背释义
-4. 拼写测试：释义自测拼写，统计正确率
+3. 单词背诵：有序翻卡遍历全部单词，可前后翻阅，翻面查看完整释义
+4. 拼写测试：有序遍历单词自测拼写，每个单词仅计分一次，不重复统计
 全部数据本地SQLite存储，无需联网"""
 Label(tab_home, text=tips, font=("微软雅黑",11), justify="left").pack(pady=20)
 
@@ -466,26 +466,28 @@ refresh_words()
 Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持Excel", font=("微软雅黑",11)).pack()
 
 # ==============================================
-# 【v1.4 新增4. 单词背诵 Tab（记忆模式）】
+# 【v1.4.1 改造 4. 单词背诵 Tab 有序遍历翻页】
 # ==============================================
 tab_memorize = ttk.Frame(tab_control)
 tab_control.add(tab_memorize, text="单词背诵")
 
 # 背诵全局变量
 mem_word_list = []
-current_mem_word = None
+mem_index = 0
 is_show_detail = tk.BooleanVar(value=False)
 
 # 顶部标题
-Label(tab_memorize, text="随机单词背诵卡", font=("微软雅黑",16,"bold")).pack(pady=10)
+Label(tab_memorize, text="有序单词背诵卡", font=("微软雅黑",16,"bold")).pack(pady=10)
+mem_pos_label = Label(tab_memorize, text="0/0", font=("微软雅黑",12))
+mem_pos_label.pack()
 
 # 卡片主显示区
-card_frame = Frame(tab_memorize, bd=2, relief="solid", width=800, height=380)
+card_frame = Frame(tab_memorize, bd=2, relief="solid", width=800, height=340)
 card_frame.pack(padx=30, pady=10, fill="x")
 card_frame.pack_propagate(False)
 
 # 单词大字
-lbl_mem_word = Label(card_frame, text="请点击「下一个单词」", font=("微软雅黑",30,"bold"), wraplength=750)
+lbl_mem_word = Label(card_frame, text="请点击「加载词库」", font=("微软雅黑",30,"bold"), wraplength=750)
 lbl_mem_word.pack(pady=40)
 
 # 详情区域（音标/释义/例句，默认隐藏）
@@ -497,33 +499,35 @@ lbl_mean = Label(detail_frame, text="释义：", font=("微软雅黑",12))
 lbl_ex = Label(detail_frame, text="例句：", font=("微软雅黑",11), wraplength=720)
 lbl_trans = Label(detail_frame, text="例句翻译：", font=("微软雅黑",11), wraplength=720)
 
-def refresh_memorize_card():
-    global mem_word_list, current_mem_word
-    # 加载当前等级全部单词
-    mem_word_list = get_all_words_by_level(current_level_id.get())
+def refresh_memorize_display():
+    global mem_word_list, mem_index
     if not mem_word_list:
         lbl_mem_word.config(text="当前等级无单词，请先录入！")
+        mem_pos_label.config(text="0/0")
         detail_frame.pack_forget()
         return
-    # 随机取词
-    current_mem_word = random.choice(mem_word_list)
-    word, uk, us, pos, mean, ex, trans = current_mem_word
-    # 重置为只显示单词
+    # 读取当前索引单词
+    word, uk, us, pos, mean, ex, trans = mem_word_list[mem_index]
     is_show_detail.set(False)
     lbl_mem_word.config(text=word)
     detail_frame.pack_forget()
+    mem_pos_label.config(text=f"{mem_index+1}/{len(mem_word_list)}")
+
+def load_memorize_words():
+    global mem_word_list, mem_index
+    mem_word_list = get_all_words_by_level(current_level_id.get())
+    mem_index = 0
+    refresh_memorize_display()
 
 def flip_card():
-    if not current_mem_word:
+    if not mem_word_list:
         return
-    word, uk, us, pos, mean, ex, trans = current_mem_word
+    word, uk, us, pos, mean, ex, trans = mem_word_list[mem_index]
     if is_show_detail.get():
-        # 隐藏详情
         is_show_detail.set(False)
         lbl_mem_word.config(text=word)
         detail_frame.pack_forget()
     else:
-        # 展示全部详情
         is_show_detail.set(True)
         lbl_mem_word.config(text=word)
         lbl_uk.config(text=f"英音：{uk}")
@@ -541,40 +545,65 @@ def flip_card():
         lbl_trans.pack(pady=3)
 
 def speak_mem_word():
-    if current_mem_word:
-        speak_word(current_mem_word[0])
+    if mem_word_list:
+        speak_word(mem_word_list[mem_index][0])
 
-# 按钮区
+def mem_prev():
+    global mem_index
+    if not mem_word_list:
+        messagebox.showinfo("提示", "请先加载词库")
+        return
+    if mem_index <= 0:
+        messagebox.showinfo("提示", "已经是第一个单词，无法向前翻页")
+        return
+    mem_index -= 1
+    refresh_memorize_display()
+
+def mem_next():
+    global mem_index
+    if not mem_word_list:
+        messagebox.showinfo("提示", "请先加载词库")
+        return
+    if mem_index >= len(mem_word_list)-1:
+        messagebox.showinfo("提示", "已经是最后一个单词，无法向后翻页")
+        return
+    mem_index += 1
+    refresh_memorize_display()
+
+# 背诵按钮区
 mem_btn_frame = Frame(tab_memorize)
 mem_btn_frame.pack(pady=10)
-ttk.Button(mem_btn_frame, text="🔊 朗读单词", style="Mid.TButton", command=speak_mem_word).grid(row=0,column=0,padx=8)
-ttk.Button(mem_btn_frame, text="翻面查看释义", style="Mid.TButton", command=flip_card).grid(row=0,column=1,padx=8)
-ttk.Button(mem_btn_frame, text="下一个单词", style="Mid.TButton", command=refresh_memorize_card).grid(row=0,column=2,padx=8)
+ttk.Button(mem_btn_frame, text="加载词库", style="Mid.TButton", command=load_memorize_words).grid(row=0,column=0,padx=6)
+ttk.Button(mem_btn_frame, text="上一个", style="Mid.TButton", command=mem_prev).grid(row=0,column=1,padx=6)
+ttk.Button(mem_btn_frame, text="下一个", style="Mid.TButton", command=mem_next).grid(row=0,column=2,padx=6)
+ttk.Button(mem_btn_frame, text="翻面查看释义", style="Mid.TButton", command=flip_card).grid(row=0,column=3,padx=6)
+ttk.Button(mem_btn_frame, text="🔊 朗读单词", style="Mid.TButton", command=speak_mem_word).grid(row=0,column=4,padx=6)
 
-Label(tab_memorize, text="操作提示：切换上方等级可更换背诵词库", font=("微软雅黑",10)).pack(pady=5)
-
-# 初始化背诵卡片
-refresh_memorize_card()
+Label(tab_memorize, text="操作提示：切换上方等级后点击「加载词库」更新背诵列表", font=("微软雅黑",10)).pack(pady=5)
 
 # ==============================================
-# 【v1.4 新增5. 拼写测试 Tab（听写自测）】
+# 【v1.4.1 改造 5. 拼写测试 Tab 有序遍历+单次计分】
 # ==============================================
 tab_spell = ttk.Frame(tab_control)
 tab_control.add(tab_spell, text="拼写测试")
 
 # 拼写测试全局变量
 spell_word_pool = []
-current_spell_word = None
+spell_idx = 0
+# 记录每个单词是否已经答过，只统计一次
+spell_answered = dict()
 correct_count = 0
 wrong_count = 0
 
-Label(tab_spell, text="释义拼写自测", font=("微软雅黑",16,"bold")).pack(pady=10)
+Label(tab_spell, text="释义拼写自测（有序遍历，每题仅计分一次）", font=("微软雅黑",16,"bold")).pack(pady=10)
+spell_pos_label = Label(tab_spell, text="0/0", font=("微软雅黑",12))
+spell_pos_label.pack()
 
 # 题目展示
-spell_card = Frame(tab_spell, bd=2, relief="solid", width=850, height=220)
+spell_card = Frame(tab_spell, bd=2, relief="solid", width=850, height=200)
 spell_card.pack(padx=20, pady=10, fill="x")
 spell_card.pack_propagate(False)
-lbl_spell_mean = Label(spell_card, text="点击「开始测试」加载单词", font=("微软雅黑",16), wraplength=800)
+lbl_spell_mean = Label(spell_card, text="点击「加载题库」加载单词", font=("微软雅黑",16), wraplength=800)
 lbl_spell_mean.pack(pady=60)
 
 # 输入框区域
@@ -592,61 +621,110 @@ lbl_spell_result.pack(pady=5)
 lbl_spell_stat = Label(tab_spell, text=f"正确：{correct_count} | 错误：{wrong_count}", font=("微软雅黑",11))
 lbl_spell_stat.pack(pady=3)
 
-# 逻辑函数
-def load_spell_words():
-    global spell_word_pool, current_spell_word
-    spell_word_pool = get_all_words_by_level(current_level_id.get())
+# 刷新当前拼写题目显示
+def refresh_spell_display():
+    global spell_word_pool, spell_idx
     if not spell_word_pool:
         lbl_spell_mean.config(text="当前等级无单词，请先录入！")
-        return False
-    pick_next_spell()
-    return True
-
-def pick_next_spell():
-    global current_spell_word
-    current_spell_word = random.choice(spell_word_pool)
-    _, _, _, _, mean, _, _ = current_spell_word
+        spell_pos_label.config(text="0/0")
+        return
+    _, _, _, _, mean, _, _ = spell_word_pool[spell_idx]
     lbl_spell_mean.config(text=f"释义：{mean}")
     entry_spell.delete(0, tk.END)
     lbl_spell_result.config(text="")
+    spell_pos_label.config(text=f"{spell_idx+1}/{len(spell_word_pool)}")
 
-def check_spell_answer():
-    global correct_count, wrong_count
-    if not current_spell_word:
-        messagebox.showinfo("提示", "请先点击开始测试")
+# 加载题库、重置答题记录与分数
+def load_spell_words():
+    global spell_word_pool, spell_idx, spell_answered, correct_count, wrong_count
+    spell_word_pool = get_all_words_by_level(current_level_id.get())
+    spell_idx = 0
+    spell_answered.clear()
+    correct_count = 0
+    wrong_count = 0
+    lbl_spell_stat.config(text=f"正确：{correct_count} | 错误：{wrong_count}")
+    refresh_spell_display()
+
+# 上一题
+def spell_prev():
+    global spell_idx
+    if not spell_word_pool:
+        messagebox.showinfo("提示", "请先加载题库")
         return
+    if spell_idx <= 0:
+        messagebox.showinfo("提示", "已经是第一题，无法向前翻页")
+        return
+    spell_idx -= 1
+    refresh_spell_display()
+
+# 下一题
+def spell_next():
+    global spell_idx
+    if not spell_word_pool:
+        messagebox.showinfo("提示", "请先加载题库")
+        return
+    if spell_idx >= len(spell_word_pool)-1:
+        messagebox.showinfo("提示", "已经是最后一题，无法向后翻页")
+        return
+    spell_idx += 1
+    refresh_spell_display()
+
+# 提交答案，仅首次答题计分
+def check_spell_answer():
+    global correct_count, wrong_count, spell_answered
+    if not spell_word_pool:
+        messagebox.showinfo("提示", "请先点击加载题库")
+        return
+    current_word = spell_word_pool[spell_idx][0]
     user_input = entry_spell.get().strip().lower()
-    real_word = current_spell_word[0].lower()
+    real_word = current_word.lower()
+
+    # 该单词已经答过，只提示不统计分数
+    if current_word in spell_answered:
+        if user_input == real_word:
+            lbl_spell_result.config(text="✅ 正确（已记录，分数不重复累加）", fg="green")
+        else:
+            lbl_spell_result.config(text=f"❌ 错误，正确单词：{current_word}（已记录）", fg="red")
+        return
+
+    # 首次作答，统计分数并标记已答
+    spell_answered[current_word] = True
     if user_input == real_word:
         correct_count += 1
         lbl_spell_result.config(text="✅ 拼写正确！", fg="green")
     else:
         wrong_count += 1
-        lbl_spell_result.config(text=f"❌ 错误，正确单词：{current_spell_word[0]}", fg="red")
-    # 更新统计
+        lbl_spell_result.config(text=f"❌ 错误，正确单词：{current_word}", fg="red")
     lbl_spell_stat.config(text=f"正确：{correct_count} | 错误：{wrong_count}")
-    # 自动切换下一题
-    root.after(1200, pick_next_spell)
 
+# 重置分数与答题记录
 def reset_spell_stat():
-    global correct_count, wrong_count
+    global correct_count, wrong_count, spell_answered
     correct_count = 0
     wrong_count = 0
+    spell_answered.clear()
     lbl_spell_stat.config(text=f"正确：{correct_count} | 错误：{wrong_count}")
     lbl_spell_result.config(text="")
 
-# 按钮区
+# 朗读当前标准答案
+def spell_speak_ans():
+    if spell_word_pool:
+        speak_word(spell_word_pool[spell_idx][0])
+
+# 拼写测试按钮区
 spell_btn_frame = Frame(tab_spell)
 spell_btn_frame.pack(pady=10)
-ttk.Button(spell_btn_frame, text="开始测试", style="Mid.TButton", command=load_spell_words).grid(row=0,column=0,padx=6)
-ttk.Button(spell_btn_frame, text="提交答案", style="Mid.TButton", command=check_spell_answer).grid(row=0,column=1,padx=6)
-ttk.Button(spell_btn_frame, text="重置统计", style="Mid.TButton", command=reset_spell_stat).grid(row=0,column=2,padx=6)
-ttk.Button(spell_btn_frame, text="朗读标准答案", style="Mid.TButton", command=lambda: speak_word(current_spell_word[0] if current_spell_word else "")).grid(row=0,column=3,padx=6)
+ttk.Button(spell_btn_frame, text="加载题库", style="Mid.TButton", command=load_spell_words).grid(row=0,column=0,padx=4)
+ttk.Button(spell_btn_frame, text="上一题", style="Mid.TButton", command=spell_prev).grid(row=0,column=1,padx=4)
+ttk.Button(spell_btn_frame, text="下一题", style="Mid.TButton", command=spell_next).grid(row=0,column=2,padx=4)
+ttk.Button(spell_btn_frame, text="提交答案", style="Mid.TButton", command=check_spell_answer).grid(row=0,column=3,padx=4)
+ttk.Button(spell_btn_frame, text="朗读答案", style="Mid.TButton", command=spell_speak_ans).grid(row=0,column=4,padx=4)
+ttk.Button(spell_btn_frame, text="重置统计", style="Mid.TButton", command=reset_spell_stat).grid(row=0,column=5,padx=4)
 
 # 回车提交答案
 entry_spell.bind("<Return>", lambda e: check_spell_answer())
 
-Label(tab_spell, text="提示：切换上方等级后重新点击「开始测试」更换题库", font=("微软雅黑",10)).pack(pady=5)
+Label(tab_spell, text="提示：切换等级后重新「加载题库」，每个单词仅首次答题计入分数", font=("微软雅黑",10)).pack(pady=5)
 
 # ======================
 # 主循环启动
