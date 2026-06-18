@@ -10,7 +10,7 @@ import random
 # 版本 v1.4 新增背诵+拼写测试
 # ======================
 VERSION = "v1.4 | Wordix单词单机版（背诵+拼写测试+发音+等级+导入导出）"
-DB_NAME = "wordix.db"
+DB_NAME = "wordix.xdb"
 
 # ======================
 # 初始化发音引擎
