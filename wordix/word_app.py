@@ -7,7 +7,7 @@ import os
 import random
 
 # ======================
-# 版本 v1.4.1 有序翻页背诵+拼写、单次计分
+# 版本 v1.4.1 修复全局变量 + 数据库初始化 + 分页失效
 # ======================
 VERSION = "v1.4.1 | Wordix单词单机版（有序翻页背诵+拼写测试+单次计分+发音+等级+导入导出）"
 DB_NAME = "wordix.db"
@@ -23,16 +23,18 @@ def speak_word(text):
         engine.runAndWait()
 
 # ======================
-# 数据库初始化
+# 数据库初始化（强化，程序启动第一时间执行）
 # ======================
 def init_database():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
+    # 建等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
+    # 建单词表
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL UNIQUE,
@@ -45,6 +47,7 @@ def init_database():
                     translation TEXT,
                     FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
+    # 预置等级数据
     level_data = [
         ('小学3-4年级',10),('小学5-6年级',20),('初中7-9年级',30),
         ('高中必修',40),('高中选择性必修',50),('大学四级',60),
@@ -116,7 +119,7 @@ def search_word_in_db_by_level(level_id, word):
     conn.close()
     return res
 
-# 【v1.4新增】获取当前等级所有单词（背诵/拼写测试用）
+# 获取当前等级所有单词（背诵/拼写测试用）
 def get_all_words_by_level(level_id):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
@@ -220,7 +223,7 @@ def import_words_excel(level_id):
         messagebox.showerror("错误", f"导入失败：{str(e)}")
 
 # ======================
-# 主窗口初始化
+# 主程序入口，先初始化数据库
 # ======================
 init_database()
 root = tk.Tk()
@@ -236,7 +239,7 @@ tab_control = ttk.Notebook(root)
 tab_control.pack(expand=1, fill="both", padx=10, pady=10)
 
 # ==============================================
-# 全局等级变量
+# 全局变量（分页、等级）
 # ==============================================
 level_list = get_level_options()
 level_ids = [item[0] for item in level_list]
@@ -344,7 +347,7 @@ def save_word():
 ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
 
 # ==============================================
-# 3. 词库管理 Tab（修复Treeview增加音标列）
+# 3. 词库管理 Tab（修复Treeview + 分页全局global声明）
 # ==============================================
 tab_table = ttk.Frame(tab_control)
 tab_control.add(tab_table, text="词库管理")
@@ -383,9 +386,9 @@ lbl_temp.bind("<Button-1>", lambda e: download_import_template())
 
 # 等级切换事件
 def on_level_change(event):
+    global current_page
     idx = level_comb.current()
     current_level_id.set(level_ids[idx])
-    global current_page
     current_page = 1
     refresh_words()
 
@@ -428,17 +431,33 @@ page_frame.pack(fill="x", padx=20, pady=5)
 page_label = Label(page_frame, text="第 1 页", font=("微软雅黑",11))
 page_label.pack(side="left", padx=10)
 
+# ========== 修复：全部添加 global current_page 消除UnboundLocalError ==========
+def refresh_words():
+    global current_page
+    data, total, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
+    tree.delete(*tree.get_children())
+    for row in data:
+        tree.insert("", "end", values=row)
+    page_label.config(text=f"第 {current_page}/{total_page} 页 | 本等级：{total} 个")
+
 def prev_page():
     global current_page
+    _, _, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
     if current_page > 1:
         current_page -= 1
         refresh_words()
+    else:
+        messagebox.showinfo("提示", "已经是第一页！")
 
 def next_page():
+    global current_page
     _, _, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
     if current_page < total_page:
         current_page += 1
         refresh_words()
+    else:
+        messagebox.showinfo("提示", "已经是最后一页！")
+# ==========================================================================
 
 btn_prev = Button(page_frame, text="上一页", command=prev_page, width=10)
 btn_prev.pack(side="left", padx=5)
@@ -454,14 +473,7 @@ def on_tree_click(event):
 tree.bind("<Double-1>", on_tree_click)
 tree.bind("<Return>", on_tree_click)
 
-# 刷新列表
-def refresh_words():
-    data, total, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
-    tree.delete(*tree.get_children())
-    for row in data:
-        tree.insert("", "end", values=row)
-    page_label.config(text=f"第 {current_page}/{total_page} 页 | 本等级：{total} 个")
-
+# 初始化加载列表
 refresh_words()
 Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持Excel", font=("微软雅黑",11)).pack()
 
@@ -506,7 +518,6 @@ def refresh_memorize_display():
         mem_pos_label.config(text="0/0")
         detail_frame.pack_forget()
         return
-    # 读取当前索引单词
     word, uk, us, pos, mean, ex, trans = mem_word_list[mem_index]
     is_show_detail.set(False)
     lbl_mem_word.config(text=word)
@@ -590,7 +601,6 @@ tab_control.add(tab_spell, text="拼写测试")
 # 拼写测试全局变量
 spell_word_pool = []
 spell_idx = 0
-# 记录每个单词是否已经答过，只统计一次
 spell_answered = dict()
 correct_count = 0
 wrong_count = 0
@@ -679,7 +689,6 @@ def check_spell_answer():
     user_input = entry_spell.get().strip().lower()
     real_word = current_word.lower()
 
-    # 该单词已经答过，只提示不统计分数
     if current_word in spell_answered:
         if user_input == real_word:
             lbl_spell_result.config(text="✅ 正确（已记录，分数不重复累加）", fg="green")
@@ -687,7 +696,6 @@ def check_spell_answer():
             lbl_spell_result.config(text=f"❌ 错误，正确单词：{current_word}（已记录）", fg="red")
         return
 
-    # 首次作答，统计分数并标记已答
     spell_answered[current_word] = True
     if user_input == real_word:
         correct_count += 1
