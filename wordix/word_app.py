@@ -7,9 +7,9 @@ import os
 import random
 
 # ======================
-# 版本 v1.5 单词本功能
+# 版本 v2.0 一词多义支持
 # ======================
-VERSION = "v1.5 | Wordix单词单机版（有序背诵+拼写测试+单词本+单次计分+发音+等级+导入导出）"
+VERSION = "v2.0 | Wordix单词单机版（一词多义+有序背诵+拼写测试+单词本+单次计分+发音+等级+导入导出）"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(SCRIPT_DIR, "wordix.xdb")
@@ -32,23 +32,38 @@ def speak_word(text):
 def init_database():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
+
+    # 等级表
     c.execute('''CREATE TABLE IF NOT EXISTS levels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort INTEGER DEFAULT 0
                 )''')
+
+    # 单词主表（移除UNIQUE约束，支持一词多义）
     c.execute('''CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    word TEXT NOT NULL UNIQUE,
+                    word TEXT NOT NULL,
                     uk_phonetic TEXT,
                     us_phonetic TEXT,
-                    pos TEXT,
-                    meaning TEXT NOT NULL,
                     level_id INTEGER,
-                    example TEXT,
-                    translation TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (level_id) REFERENCES levels(id)
                 )''')
+
+    # 词性和释义表（一对多关系）
+    c.execute('''CREATE TABLE IF NOT EXISTS word_senses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word_id INTEGER NOT NULL,
+                    pos TEXT NOT NULL,
+                    meaning TEXT NOT NULL,
+                    example TEXT,
+                    translation TEXT,
+                    frequency INTEGER DEFAULT 0,
+                    FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE
+                )''')
+
+    # 单词本表
     c.execute('''CREATE TABLE IF NOT EXISTS word_book (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     word TEXT NOT NULL,
@@ -57,6 +72,12 @@ def init_database():
                     mastered INTEGER DEFAULT 0,
                     UNIQUE(word)
                 )''')
+
+    # 创建索引提升查询性能
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_words_word ON words(word)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_word_senses_word_id ON word_senses(word_id)''')
+
+    # 初始化等级数据
     level_data = [
         ('小学3-4年级', 10), ('小学5-6年级', 20), ('初中7-9年级', 30),
         ('高中必修', 40), ('高中选择性必修', 50), ('大学四级', 60),
@@ -65,6 +86,7 @@ def init_database():
     for name, sort in level_data:
         c.execute('''INSERT OR IGNORE INTO levels (name, sort)
                       VALUES (?, ?)''', (name, sort))
+
     conn.commit()
     conn.close()
 
@@ -90,34 +112,85 @@ def get_level_id_by_name(name):
     return res[0] if res else None
 
 
-def save_word_to_db(word_data):
+def save_word_to_db_with_senses(word, uk_phonetic, us_phonetic, level_id, senses_list):
+    """
+    保存单词及其多个词性和释义
+    word: 单词文本
+    uk_phonetic: 英音标
+    us_phonetic: 美音标
+    level_id: 等级ID
+    senses_list: [(pos, meaning, example, translation), ...]
+    """
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         c = conn.cursor()
-        c.execute('''INSERT INTO words
-                     (word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation)
-                     VALUES (?,?,?,?,?,?,?,?)''', word_data)
+
+        # 检查单词是否已存在
+        c.execute("SELECT id FROM words WHERE word=?", (word,))
+        existing = c.fetchone()
+
+        if existing:
+            word_id = existing[0]
+            print(f"📝 更新单词: {word} (ID: {word_id})，删除旧释义")
+            # 删除旧的释义
+            c.execute("DELETE FROM word_senses WHERE word_id=?", (word_id,))
+        else:
+            # 插入新单词
+            c.execute('''INSERT INTO words (word, uk_phonetic, us_phonetic, level_id)
+                         VALUES (?,?,?,?)''',
+                      (word, uk_phonetic, us_phonetic, level_id))
+            word_id = c.lastrowid
+            print(f"✨ 新建单词: {word} (ID: {word_id})")
+
+        # 插入所有词性和释义
+        for i, (pos, meaning, example, translation) in enumerate(senses_list):
+            frequency = 100 - i * 10  # 第一个释义最常用
+            c.execute('''INSERT INTO word_senses 
+                         (word_id, pos, meaning, example, translation, frequency)
+                         VALUES (?,?,?,?,?,?)''',
+                      (word_id, pos.strip(), meaning.strip(),
+                       example.strip(), translation.strip(), frequency))
+            print(f"  ✅ 释义 {i + 1}: [{pos}] {meaning}")
+
         conn.commit()
+        print(f"💾 数据库提交成功！共保存 {len(senses_list)} 个释义\n")
         return True
-    except sqlite3.IntegrityError:
+    except Exception as e:
+        print(f"❌ 保存失败: {e}\n")
         return False
     finally:
         conn.close()
+
+
+def save_word_to_db(word_data):
+    """兼容旧接口，单个词性释义"""
+    word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation = word_data
+    senses_list = [(pos, meaning, example, translation)]
+    return save_word_to_db_with_senses(word, uk_phonetic, us_phonetic, level_id, senses_list)
 
 
 def load_words_by_level_and_page(level_id, page_num, page_size=10):
     offset = (page_num - 1) * page_size
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, w.meaning, l.name
+
+    # 获取每个单词的第一个释义用于列表显示
+    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, 
+                        GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings,
+                        l.name
                  FROM words w
+                 LEFT JOIN word_senses ws ON w.id = ws.word_id
                  LEFT JOIN levels l ON w.level_id = l.id
                  WHERE w.level_id=?
+                 GROUP BY w.id
                  LIMIT ? OFFSET ?''', (level_id, page_size, offset))
+
     data = c.fetchall()
-    c.execute('''SELECT COUNT(*) FROM words WHERE level_id=?''', (level_id,))
+
+    c.execute('''SELECT COUNT(DISTINCT w.id) FROM words w WHERE w.level_id=?''', (level_id,))
     total = c.fetchone()[0]
     total_page = (total + page_size - 1) // page_size
+
     conn.close()
     return data, total, total_page
 
@@ -125,23 +198,82 @@ def load_words_by_level_and_page(level_id, page_num, page_size=10):
 def search_word_in_db_by_level(level_id, word):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, w.meaning, l.name
+
+    c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, 
+                        GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings,
+                        l.name
                  FROM words w
+                 LEFT JOIN word_senses ws ON w.id = ws.word_id
                  LEFT JOIN levels l ON w.level_id = l.id
-                 WHERE w.level_id=? AND w.word=?''', (level_id, word))
+                 WHERE w.level_id=? AND w.word=?
+                 GROUP BY w.id''', (level_id, word))
+
     res = c.fetchone()
     conn.close()
     return res
 
 
 def get_all_words_by_level(level_id):
+    """获取某等级所有单词及其完整释义（用于背诵和测试）"""
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute('''SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
-                 FROM words WHERE level_id=?''', (level_id,))
-    all_words = c.fetchall()
+
+    # 获取单词基本信息
+    c.execute('''SELECT DISTINCT w.word, w.uk_phonetic, w.us_phonetic
+                 FROM words w
+                 WHERE w.level_id=?''', (level_id,))
+
+    words = []
+    for row in c.fetchall():
+        word, uk, us = row
+
+        # 获取该单词的所有释义
+        c.execute('''SELECT pos, meaning, example, translation 
+                     FROM word_senses 
+                     WHERE word_id=(SELECT id FROM words WHERE word=? AND level_id=?)
+                     ORDER BY frequency DESC, id ASC''', (word, level_id))
+
+        senses = c.fetchall()
+
+        # 合并释义为显示格式
+        full_meaning = "; ".join([f"{pos} {mean}" for pos, mean, _, _ in senses])
+
+        # 取第一个例句作为示例
+        first_example = senses[0][2] if senses and senses[0][2] else ""
+        first_translation = senses[0][3] if senses and senses[0][3] else ""
+
+        words.append((word, uk, us, "", full_meaning, first_example, first_translation))
+
     conn.close()
-    return all_words
+    return words
+
+
+def get_word_full_details(word):
+    """获取单词的完整详细信息（所有释义）"""
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+
+    c.execute("SELECT id, word, uk_phonetic, us_phonetic, level_id FROM words WHERE word=?", (word,))
+    word_info = c.fetchone()
+
+    if not word_info:
+        return None
+
+    c.execute('''SELECT pos, meaning, example, translation 
+                 FROM word_senses 
+                 WHERE word_id=? 
+                 ORDER BY frequency DESC, id ASC''', (word_info[0],))
+
+    senses = c.fetchall()
+    conn.close()
+
+    return {
+        'word': word_info[1],
+        'uk_phonetic': word_info[2],
+        'us_phonetic': word_info[3],
+        'level_id': word_info[4],
+        'senses': senses
+    }
 
 
 def add_word_to_word_book(word, note=""):
@@ -164,10 +296,14 @@ def add_word_to_word_book(word, note=""):
 def get_word_book_words():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute('''SELECT b.word, w.uk_phonetic, w.us_phonetic, w.pos, w.meaning, w.example, w.translation, b.added_time, b.note, b.mastered
+    c.execute('''SELECT b.word, w.uk_phonetic, w.us_phonetic, 
+                        GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings,
+                        b.added_time, b.note, b.mastered
                  FROM word_book b
                  LEFT JOIN words w ON b.word = w.word
+                 LEFT JOIN word_senses ws ON w.id = ws.word_id
                  WHERE b.mastered = 0
+                 GROUP BY b.word
                  ORDER BY b.added_time DESC''')
     words = c.fetchall()
     conn.close()
@@ -208,9 +344,15 @@ def mark_word_as_mastered(word):
 def export_current_level_words(level_id, level_name):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+
+        # 导出包含所有释义
         df = pd.read_sql(f"""
-            SELECT word, uk_phonetic, us_phonetic, pos, meaning, example, translation
-            FROM words WHERE level_id = {level_id}
+            SELECT w.word, w.uk_phonetic, w.us_phonetic, 
+                   ws.pos, ws.meaning, ws.example, ws.translation
+            FROM words w
+            LEFT JOIN word_senses ws ON w.id = ws.word_id
+            WHERE w.level_id = {level_id}
+            ORDER BY w.word, ws.frequency DESC
         """, conn)
 
         if df.empty:
@@ -226,7 +368,7 @@ def export_current_level_words(level_id, level_name):
             return
 
         df.to_excel(path, index=False)
-        messagebox.showinfo("成功", f"已导出 {len(df)} 个单词！")
+        messagebox.showinfo("成功", f"已导出 {len(df)} 条记录！")
     except Exception as e:
         messagebox.showerror("错误", f"导出失败：{str(e)}")
     finally:
@@ -235,13 +377,13 @@ def export_current_level_words(level_id, level_name):
 
 def download_import_template():
     template = {
-        "word": ["apple"],
-        "uk_phonetic": ["ˈæpl"],
-        "us_phonetic": ["ˈæpl"],
-        "pos": ["n."],
-        "meaning": ["苹果"],
-        "example": ["This is an apple."],
-        "translation": ["这是一个苹果。"]
+        "word": ["order", "order", "order"],
+        "uk_phonetic": ["ˈɔːdə(r)", "ˈɔːdə(r)", "ˈɔːdə(r)"],
+        "us_phonetic": ["ˈɔːrdər", "ˈɔːrdər", "ˈɔːrdər"],
+        "pos": ["n.", "v.", "n."],
+        "meaning": ["订单", "订购", "顺序"],
+        "example": ["I placed an order.", "I want to order a book.", "List them in order."],
+        "translation": ["我下了一个订单。", "我想订购一本书。", "按顺序列出它们。"]
     }
     df = pd.DataFrame(template)
     path = filedialog.asksaveasfilename(
@@ -251,7 +393,7 @@ def download_import_template():
     )
     if path:
         df.to_excel(path, index=False)
-        messagebox.showinfo("成功", "导入模板已下载完成！")
+        messagebox.showinfo("成功", "导入模板已下载完成！（支持一词多义，同一单词多行表示不同释义）")
 
 
 def import_words_excel(level_id):
@@ -268,31 +410,42 @@ def import_words_excel(level_id):
             messagebox.showerror("错误", "模板错误！必须包含 word 和 meaning 列")
             return
 
+        # 按单词分组处理
+        grouped = df.groupby('word')
         success = 0
         fail = 0
-        for _, row in df.iterrows():
-            word = str(row["word"]).strip()
-            meaning = str(row["meaning"]).strip()
-            if not word or not meaning:
-                fail += 1
-                continue
 
-            data = (
-                word,
-                str(row.get("uk_phonetic", "")).strip(),
-                str(row.get("us_phonetic", "")).strip(),
-                str(row.get("pos", "")).strip(),
-                meaning,
-                level_id,
-                str(row.get("example", "")).strip(),
-                str(row.get("translation", "")).strip()
-            )
-            if save_word_to_db(data):
-                success += 1
-            else:
+        for word, group in grouped:
+            try:
+                # 提取公共信息（取第一行）
+                first_row = group.iloc[0]
+                uk = str(first_row.get("uk_phonetic", "")).strip()
+                us = str(first_row.get("us_phonetic", "")).strip()
+
+                # 收集所有释义
+                senses_list = []
+                for _, row in group.iterrows():
+                    pos = str(row.get("pos", "")).strip()
+                    meaning = str(row["meaning"]).strip()
+                    example = str(row.get("example", "")).strip()
+                    translation = str(row.get("translation", "")).strip()
+
+                    if meaning:  # 释义不能为空
+                        senses_list.append((pos, meaning, example, translation))
+
+                if senses_list:
+                    if save_word_to_db_with_senses(word, uk, us, level_id, senses_list):
+                        success += len(senses_list)
+                    else:
+                        fail += 1
+                else:
+                    fail += 1
+
+            except Exception as e:
+                print(f"导入单词 {word} 失败: {e}")
                 fail += 1
 
-        messagebox.showinfo("导入完成", f"成功：{success} 个\n重复/失败：{fail} 个")
+        messagebox.showinfo("导入完成", f"成功：{success} 条释义\n失败/重复：{fail} 个单词")
         refresh_words()
     except Exception as e:
         messagebox.showerror("错误", f"导入失败：{str(e)}")
@@ -335,12 +488,14 @@ tab_control.add(tab_home, text="首页")
 Label(tab_home, text="🔥 Wordix 词根单词学习系统", font=("微软雅黑", 22, "bold")).pack(pady=30)
 Label(tab_home, text=VERSION, font=("微软雅黑", 12)).pack(pady=5)
 tips = """功能清单：
-1. 单词录入：录入音标、词性、例句，按等级分类存储
-2. 词库管理：搜索、分页、Excel导入导出、下载模板
-3. 单词背诵：有序翻卡遍历全部单词，可前后翻阅，翻面查看完整释义
-4. 拼写测试：有序遍历单词自测拼写，每个单词仅计分一次，不重复统计
-5. 📖 单词本：自动收集错题+手动添加重点单词，专门复习，标记已掌握
-全部数据本地SQLite存储，无需联网"""
+1. 单词录入：支持一词多义、一词多词性，表格形式录入
+2. 词库管理：搜索、分页、Excel导入导出（支持多义词）
+3. 单词背诵：有序翻卡遍历全部单词，显示完整释义列表
+4. 拼写测试：有序遍历单词自测拼写，每个单词仅计分一次
+5. 📖 单词本：自动收集错题+手动添加重点单词，专门复习
+全部数据本地SQLite存储，无需联网
+
+✨ v2.0 新增：一词多义支持！同一个单词可以有多个词性和释义"""
 Label(tab_home, text=tips, font=("微软雅黑", 11), justify="left").pack(pady=20)
 
 # ==============================================
@@ -349,15 +504,13 @@ Label(tab_home, text=tips, font=("微软雅黑", 11), justify="left").pack(pady=
 tab_add_word = ttk.Frame(tab_control)
 tab_control.add(tab_add_word, text="单词录入")
 
-Label(tab_add_word, text="单词录入", font=("微软雅黑", 16, "bold")).pack(pady=15)
+Label(tab_add_word, text="单词录入（支持一词多义）", font=("微软雅黑", 16, "bold")).pack(pady=15)
 f = Frame(tab_add_word)
 f.pack(padx=40)
 
 entry_word = Entry(f, width=30, font=("微软雅黑", 11))
 entry_uk = Entry(f, width=30, font=("微软雅黑", 11))
 entry_us = Entry(f, width=30, font=("微软雅黑", 11))
-entry_pos = Entry(f, width=30, font=("微软雅黑", 11))
-entry_meaning = Entry(f, width=30, font=("微软雅黑", 11))
 
 cb_level = ttk.Combobox(f, textvariable=current_level_name, values=level_names, width=27, state="readonly")
 cb_level.configure(state="disabled")
@@ -365,64 +518,326 @@ cb_level.configure(state="disabled")
 btn_speak = Button(f, text="🔊 朗读单词", font=("微软雅黑", 10, "bold"),
                    command=lambda: speak_word(entry_word.get()))
 
-rows = [
+rows_basic = [
     ("单词：", entry_word),
     ("英音标：", entry_uk),
     ("美音标：", entry_us),
-    ("词性：", entry_pos),
-    ("中文释义：", entry_meaning),
     ("等级：", cb_level),
 ]
 
-for i, (t, e) in enumerate(rows):
+for i, (t, e) in enumerate(rows_basic):
     Label(f, text=t, width=10, anchor="e", font=("微软雅黑", 11)).grid(row=i, column=0, pady=6)
     e.grid(row=i, column=1, pady=6)
 
 btn_speak.grid(row=0, column=2, padx=10, pady=6)
 
-Label(f, text="英文例句：", font=("微软雅黑", 11)).grid(row=10, column=0, sticky="ne", pady=6)
-txt_example = Text(f, width=28, height=3, font=("微软雅黑", 10))
-txt_example.grid(row=10, column=1, pady=6)
+# 词性和释义表格区域
+Label(f, text="词性、释义、例句（表格形式）：", font=("微软雅黑", 11, "bold")).grid(row=10, column=0, columnspan=3,
+                                                                               sticky="w", pady=(15, 5))
 
-Label(f, text="中文翻译：", font=("微软雅黑", 11)).grid(row=11, column=0, sticky="ne", pady=6)
-txt_trans = Text(f, width=28, height=3, font=("微软雅黑", 10))
-txt_trans.grid(row=11, column=1, pady=6)
+# 创建Treeview表格（添加复选框列）
+senses_frame = Frame(f)
+senses_frame.grid(row=11, column=0, columnspan=3, sticky="ew", pady=5)
+
+senses_tree = ttk.Treeview(senses_frame, columns=("selected", "pos", "meaning", "example", "translation"),
+                           show="headings", height=6)
+senses_tree.heading("selected", text="✓")
+senses_tree.heading("pos", text="词性")
+senses_tree.heading("meaning", text="释义")
+senses_tree.heading("example", text="英文例句")
+senses_tree.heading("translation", text="中文翻译")
+senses_tree.column("selected", width=40, anchor="center")
+senses_tree.column("pos", width=60)
+senses_tree.column("meaning", width=120)
+senses_tree.column("example", width=200)
+senses_tree.column("translation", width=200)
+senses_tree.pack(side="left", fill="x", expand=True)
+
+# 添加滚动条
+scrollbar = ttk.Scrollbar(senses_frame, orient="vertical", command=senses_tree.yview)
+scrollbar.pack(side="right", fill="y")
+senses_tree.configure(yscrollcommand=scrollbar.set)
+
+# 配置标签样式 - 偶数行和奇数行不同背景色
+senses_tree.tag_configure("oddrow", background="#f0f8ff")
+senses_tree.tag_configure("evenrow", background="#ffffff")
+senses_tree.tag_configure("newrow", background="#fffacd")  # 新添加的行用黄色背景
+
+# 表格操作按钮
+btn_frame = Frame(f)
+btn_frame.grid(row=12, column=0, columnspan=3, sticky="w", pady=5)
+
+
+def add_sense_row():
+    """添加新的一行"""
+    item_id = senses_tree.insert("", "end", values=("☐", "", "", "", ""))
+    # 为新添加的行设置特殊背景色
+    senses_tree.item(item_id, tags=("newrow",))
+
+    # 2秒后恢复正常颜色
+    def normalize_color():
+        try:
+            all_items = senses_tree.get_children()
+            for i, item in enumerate(all_items):
+                tag = "oddrow" if i % 2 == 0 else "evenrow"
+                senses_tree.item(item, tags=(tag,))
+        except:
+            pass
+
+    senses_tree.after(2000, normalize_color)
+
+
+def delete_selected_rows():
+    """删除所有选中的行"""
+    selected_items = []
+    for item in senses_tree.get_children():
+        values = senses_tree.item(item)["values"]
+        if values and values[0] == "☑":  # 已选中的行
+            selected_items.append(item)
+
+    if not selected_items:
+        messagebox.showwarning("提示", "请先勾选要删除的行（点击第一列的☐变为☑）")
+        return
+
+    # 确认删除
+    if messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected_items)} 行吗？"):
+        for item in selected_items:
+            senses_tree.delete(item)
+        # 重新调整背景色
+        refresh_row_colors()
+
+
+def clear_all_rows():
+    """清空所有行"""
+    if senses_tree.get_children() and messagebox.askyesno("确认", "确定要清空所有释义吗？"):
+        senses_tree.delete(*senses_tree.get_children())
+
+
+def refresh_row_colors():
+    """刷新行的背景颜色"""
+    all_items = senses_tree.get_children()
+    for i, item in enumerate(all_items):
+        tag = "oddrow" if i % 2 == 0 else "evenrow"
+        senses_tree.item(item, tags=(tag,))
+
+
+Button(btn_frame, text="➕ 添加一行", command=add_sense_row, font=("微软雅黑", 9), bg="#e8f5e9").pack(side="left",
+                                                                                                     padx=5)
+Button(btn_frame, text="🗑️ 删除选中", command=delete_selected_rows, font=("微软雅黑", 9), bg="#ffebee").pack(
+    side="left", padx=5)
+Button(btn_frame, text="🧹 清空全部", command=clear_all_rows, font=("微软雅黑", 9), bg="#fff3e0").pack(side="left",
+                                                                                                      padx=5)
+
+
+# 单击切换选中状态
+def toggle_selection(event):
+    """点击第一列切换选中状态"""
+    region = senses_tree.identify("region", event.x, event.y)
+    if region != "cell":
+        return
+
+    column = senses_tree.identify_column(event.x)
+    if column != "#1":  # 只响应第一列（复选框列）的点击
+        return
+
+    item = senses_tree.identify_row(event.y)
+    if not item:
+        return
+
+    # 获取当前值
+    values = list(senses_tree.item(item)["values"])
+
+    # 切换复选框状态
+    if values[0] == "☐":
+        values[0] = "☑"
+    else:
+        values[0] = "☐"
+
+    senses_tree.item(item, values=tuple(values))
+
+
+senses_tree.bind("<Button-1>", toggle_selection)
+
+#
+# # 双击编辑单元格（从第二列开始）
+# def on_double_click(event):
+#     """双击单元格进行编辑"""
+#     region = senses_tree.identify("region", event.x, event.y)
+#     if region != "cell":
+#         return
+#
+#     column = senses_tree.identify_column(event.x)
+#     if column == "#1":  # 第一列是复选框，不允许编辑
+#         return
+#
+#     item = senses_tree.selection()[0] if senses_tree.selection() else None
+#     if not item:
+#         item = senses_tree.identify_row(event.y)
+#     if not item:
+#         return
+#
+#     # 获取列索引
+#     col_idx = int(column.replace("#", "")) - 1
+#
+#     bbox = senses_tree.bbox(item, column)
+#     if not bbox:
+#         return
+#
+#     x, y, width, height = bbox
+#
+#     # 创建临时输入框
+#     edit_entry = Entry(senses_tree, font=("微软雅黑", 10))
+#     edit_entry.place(x=x, y=y, width=width, height=height)
+#     edit_entry.focus()
+#
+#     # 填充当前值
+#     current_values = list(senses_tree.item(item)["values"])
+#     edit_entry.insert(0, str(current_values[col_idx]))
+#
+#     def save_edit(event=None):
+#         new_value = edit_entry.get()
+#         current_values[col_idx] = new_value
+#         senses_tree.item(item, values=tuple(current_values))
+#         edit_entry.destroy()
+#
+#     edit_entry.bind("<Return>", save_edit)
+#     edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
+#
+#
+# senses_tree.bind("<Double-1>", on_double_click)
+
+
+# 双击编辑单元格（从第二列开始）
+def on_double_click(event):
+    """双击单元格进行编辑"""
+    region = senses_tree.identify("region", event.x, event.y)
+    if region != "cell":
+        return
+
+    column = senses_tree.identify_column(event.x)
+    if column == "#1":  # 第一列是复选框，不允许编辑
+        return
+
+    item = senses_tree.selection()[0] if senses_tree.selection() else None
+    if not item:
+        item = senses_tree.identify_row(event.y)
+    if not item:
+        return
+
+    # 获取列索引
+    col_idx = int(column.replace("#", "")) - 1
+
+    bbox = senses_tree.bbox(item, column)
+    if not bbox:
+        return
+
+    x, y, width, height = bbox
+
+    # 获取当前值
+    current_values = list(senses_tree.item(item)["values"])
+    old_value = str(current_values[col_idx])
+
+    print(f"✏️ 开始编辑: 行={item}, 列={col_idx}, 原值='{old_value}'")
+
+    # 创建临时输入框
+    edit_entry = Entry(senses_tree, font=("微软雅黑", 10))
+    edit_entry.place(x=x, y=y, width=width, height=height)
+    edit_entry.focus()
+    edit_entry.insert(0, old_value)
+    edit_entry.select_range(0, tk.END)  # 全选文本
+
+    def save_edit(event=None):
+        new_value = edit_entry.get().strip()
+        print(f"✅ 保存编辑: 新值='{new_value}'")
+
+        # 更新 Treeview 数据
+        updated_values = list(current_values)
+        updated_values[col_idx] = new_value
+        senses_tree.item(item, values=tuple(updated_values))
+
+        # 验证是否更新成功
+        verify_values = senses_tree.item(item)["values"]
+        print(f"🔍 验证更新: {verify_values}")
+        print(f"   第{col_idx}列的值: '{verify_values[col_idx]}'")
+
+        edit_entry.destroy()
+
+    def cancel_edit(event=None):
+        print(f"❌ 取消编辑")
+        edit_entry.destroy()
+
+    edit_entry.bind("<Return>", save_edit)
+    edit_entry.bind("<Escape>", cancel_edit)
+    # 失去焦点时也保存
+    edit_entry.bind("<FocusOut>", lambda e: save_edit())
+
+
+senses_tree.bind("<Double-1>", on_double_click)
 
 
 def save_word():
     word = entry_word.get().strip()
-    meaning = entry_meaning.get().strip()
-    if not word or not meaning:
-        messagebox.showwarning("提示", "单词和释义不能为空")
+
+    if not word:
+        messagebox.showwarning("提示", "单词不能为空")
         return
 
-    level_id = current_level_id.get()
-    data = (
-        word,
-        entry_uk.get().strip(),
-        entry_us.get().strip(),
-        entry_pos.get().strip(),
-        meaning,
-        level_id,
-        txt_example.get("1.0", tk.END).strip(),
-        txt_trans.get("1.0", tk.END).strip()
-    )
+    # 从表格中获取所有释义
+    all_items = senses_tree.get_children()
+    if not all_items:
+        messagebox.showwarning("提示", "至少添加一行词性和释义")
+        return
+    senses_list = []
+    for item in all_items:
+        values = senses_tree.item(item)["values"]
+        # 跳过第一列（复选框），从第二列开始
+        pos = str(values[1]).strip() if len(values) > 1 and values[1] else ""
+        meaning = str(values[2]).strip() if len(values) > 2 and values[2] else ""
+        example = str(values[3]).strip() if len(values) > 3 and values[3] else ""
+        translation = str(values[4]).strip() if len(values) > 4 and values[4] else ""
 
-    if save_word_to_db(data):
-        messagebox.showinfo("成功", f"单词已保存到：{current_level_name.get()}")
+        if meaning:  # 释义不能为空
+            senses_list.append((pos, meaning, example, translation))
+
+    if not senses_list:
+        messagebox.showwarning("提示", "至少填写一个释义")
+        return
+
+    print(f"💾 准备保存 {len(senses_list)} 个释义")
+    for i, (pos, meaning, example, translation) in enumerate(senses_list, 1):
+        print(f"   释义 {i}: [{pos}] {meaning}")
+        if example:
+            print(f"      例句: {example}")
+        if translation:
+            print(f"      翻译: {translation}")
+
+    level_id = current_level_id.get()
+    uk = entry_uk.get().strip()
+    us = entry_us.get().strip()
+
+    if save_word_to_db_with_senses(word, uk, us, level_id, senses_list):
+        messagebox.showinfo("成功", f"单词「{word}」已保存，共 {len(senses_list)} 个释义")
+        # 清空表单
         entry_word.delete(0, tk.END)
         entry_uk.delete(0, tk.END)
         entry_us.delete(0, tk.END)
-        entry_pos.delete(0, tk.END)
-        entry_meaning.delete(0, tk.END)
-        txt_example.delete("1.0", tk.END)
-        txt_trans.delete("1.0", tk.END)
+        senses_tree.delete(*senses_tree.get_children())
         refresh_words()
     else:
-        messagebox.showerror("失败", "单词已存在")
+        messagebox.showerror("失败", "保存失败，请重试")
 
 
 ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
+
+# 添加示例说明
+example_text = """💡 使用说明：
+1. 点击「➕ 添加一行」添加新的词性和释义
+2. 点击第一列的 ☐ 变成 ☑ 来选中行
+3. 双击单元格可直接编辑内容（除复选框列）
+4. 选中行后点击「🗑️ 删除选中」批量删除
+5. 每个释义可以独立配置例句和翻译"""
+Label(tab_add_word, text=example_text, font=("微软雅黑", 9), fg="gray",
+      justify="left").pack(pady=10)
 
 # ==============================================
 # 3. 词库管理 Tab
@@ -493,7 +908,7 @@ tree = ttk.Treeview(tab_table, columns=("w", "uk", "us", "m", "l"), show="headin
 tree.heading("w", text="单词")
 tree.heading("uk", text="英音")
 tree.heading("us", text="美音")
-tree.heading("m", text="释义")
+tree.heading("m", text="释义（多个用分号分隔）")
 tree.heading("l", text="等级")
 tree.column("w", width=120)
 tree.column("uk", width=90)
@@ -548,7 +963,7 @@ def refresh_words():
 
 
 refresh_words()
-Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持Excel", font=("微软雅黑", 11)).pack()
+Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持一词多义", font=("微软雅黑", 11)).pack()
 
 # ==============================================
 # 4. 单词背诵 Tab
@@ -560,24 +975,24 @@ mem_word_list = []
 mem_index = 0
 is_show_detail = tk.BooleanVar(value=False)
 
-Label(tab_memorize, text="有序单词背诵卡", font=("微软雅黑", 16, "bold")).pack(pady=10)
+Label(tab_memorize, text="有序单词背诵卡（支持一词多义）", font=("微软雅黑", 16, "bold")).pack(pady=10)
 mem_pos_label = Label(tab_memorize, text="0/0", font=("微软雅黑", 12))
 mem_pos_label.pack()
 
-card_frame = Frame(tab_memorize, bd=2, relief="solid", width=800, height=340)
+card_frame = Frame(tab_memorize, bd=2, relief="solid", width=800, height=380)
 card_frame.pack(padx=30, pady=10, fill="x")
 card_frame.pack_propagate(False)
 
 lbl_mem_word = Label(card_frame, text="请点击「加载词库」", font=("微软雅黑", 30, "bold"), wraplength=750)
-lbl_mem_word.pack(pady=40)
+lbl_mem_word.pack(pady=30)
 
 detail_frame = Frame(card_frame)
 lbl_uk = Label(detail_frame, text="英音：", font=("微软雅黑", 12))
 lbl_us = Label(detail_frame, text="美音：", font=("微软雅黑", 12))
-lbl_pos = Label(detail_frame, text="词性：", font=("微软雅黑", 12))
-lbl_mean = Label(detail_frame, text="释义：", font=("微软雅黑", 12))
-lbl_ex = Label(detail_frame, text="例句：", font=("微软雅黑", 11), wraplength=720)
-lbl_trans = Label(detail_frame, text="例句翻译：", font=("微软雅黑", 11), wraplength=720)
+lbl_senses_title = Label(detail_frame, text="释义列表：", font=("微软雅黑", 12, "bold"))
+lbl_senses_content = Label(detail_frame, text="", font=("微软雅黑", 11), wraplength=720, justify="left")
+lbl_ex_title = Label(detail_frame, text="\n例句：", font=("微软雅黑", 12, "bold"))
+lbl_ex_content = Label(detail_frame, text="", font=("微软雅黑", 11), wraplength=720, justify="left")
 
 
 def refresh_memorize_display():
@@ -605,6 +1020,7 @@ def flip_card():
     if not mem_word_list:
         return
     word, uk, us, pos, mean, ex, trans = mem_word_list[mem_index]
+
     if is_show_detail.get():
         is_show_detail.set(False)
         lbl_mem_word.config(text=word)
@@ -612,19 +1028,46 @@ def flip_card():
     else:
         is_show_detail.set(True)
         lbl_mem_word.config(text=word)
-        lbl_uk.config(text=f"英音：{uk}")
-        lbl_us.config(text=f"美音：{us}")
-        lbl_pos.config(text=f"词性：{pos}")
-        lbl_mean.config(text=f"释义：{mean}")
-        lbl_ex.config(text=f"例句：{ex}")
-        lbl_trans.config(text=f"翻译：{trans}")
+        lbl_uk.config(text=f"英音：{uk if uk else '暂无'}")
+        lbl_us.config(text=f"美音：{us if us else '暂无'}")
+
+        # 获取完整释义列表
+        details = get_word_full_details(word)
+        if details and details['senses']:
+            # 构建释义文本
+            senses_text = ""
+            examples_text = ""
+
+            for i, (pos, meaning, example, translation) in enumerate(details['senses'], 1):
+                senses_text += f"{i}. {pos} {meaning}\n"
+
+                # 如果有例句，添加到例句文本
+                if example:
+                    examples_text += f"{i}. {example}\n"
+                    if translation:
+                        examples_text += f"   {translation}\n"
+
+            lbl_senses_content.config(text=senses_text)
+
+            if examples_text:
+                lbl_ex_content.config(text=examples_text)
+                lbl_ex_title.pack()
+                lbl_ex_content.pack(pady=3)
+            else:
+                lbl_ex_content.config(text="")
+                lbl_ex_title.pack_forget()
+                lbl_ex_content.pack_forget()
+        else:
+            lbl_senses_content.config(text="释义：暂无")
+            lbl_ex_content.config(text="")
+            lbl_ex_title.pack_forget()
+            lbl_ex_content.pack_forget()
+
         detail_frame.pack(pady=10)
         lbl_uk.pack()
         lbl_us.pack()
-        lbl_pos.pack()
-        lbl_mean.pack()
-        lbl_ex.pack(pady=3)
-        lbl_trans.pack(pady=3)
+        lbl_senses_title.pack()
+        lbl_senses_content.pack(pady=5)
 
 
 def speak_mem_word():
@@ -839,10 +1282,7 @@ lbl_wordbook_word.pack(pady=50)
 wordbook_detail_frame = Frame(wordbook_card_frame)
 lbl_wordbook_uk = Label(wordbook_detail_frame, text="英音：", font=("微软雅黑", 12))
 lbl_wordbook_us = Label(wordbook_detail_frame, text="美音：", font=("微软雅黑", 12))
-lbl_wordbook_pos = Label(wordbook_detail_frame, text="词性：", font=("微软雅黑", 12))
-lbl_wordbook_mean = Label(wordbook_detail_frame, text="释义：", font=("微软雅黑", 12))
-lbl_wordbook_ex = Label(wordbook_detail_frame, text="例句：", font=("微软雅黑", 11), wraplength=720)
-lbl_wordbook_trans = Label(wordbook_detail_frame, text="例句翻译：", font=("微软雅黑", 11), wraplength=720)
+lbl_wordbook_senses = Label(wordbook_detail_frame, text="释义：", font=("微软雅黑", 12))
 lbl_wordbook_note = Label(wordbook_detail_frame, text="备注：", font=("微软雅黑", 11, "bold"), fg="blue")
 lbl_wordbook_added_time = Label(wordbook_detail_frame, text="添加时间：", font=("微软雅黑", 10))
 
@@ -882,7 +1322,7 @@ def flip_wordbook_card():
         return
 
     word_data = wordbook_list[wordbook_index]
-    word, uk, us, pos, mean, ex, trans, added_time, note, mastered = word_data
+    word, uk, us, meanings, added_time, note, mastered = word_data
 
     if is_show_wordbook_detail.get():
         is_show_wordbook_detail.set(False)
@@ -894,29 +1334,20 @@ def flip_wordbook_card():
 
         uk_text = f"英音：{uk}" if uk else "英音：暂无"
         us_text = f"美音：{us}" if us else "美音：暂无"
-        pos_text = f"词性：{pos}" if pos else "词性：暂无"
-        mean_text = f"释义：{mean}" if mean else "释义：暂无（可能未录入该单词）"
-        ex_text = f"例句：{ex}" if ex else "例句：暂无"
-        trans_text = f"翻译：{trans}" if trans else "翻译：暂无"
+        meanings_text = f"释义：{meanings}" if meanings else "释义：暂无"
         note_text = f"备注：{note}" if note else "备注：无"
         time_text = f"添加时间：{added_time}"
 
         lbl_wordbook_uk.config(text=uk_text)
         lbl_wordbook_us.config(text=us_text)
-        lbl_wordbook_pos.config(text=pos_text)
-        lbl_wordbook_mean.config(text=mean_text)
-        lbl_wordbook_ex.config(text=ex_text)
-        lbl_wordbook_trans.config(text=trans_text)
+        lbl_wordbook_senses.config(text=meanings_text)
         lbl_wordbook_note.config(text=note_text)
         lbl_wordbook_added_time.config(text=time_text)
 
         wordbook_detail_frame.pack(pady=10)
         lbl_wordbook_uk.pack()
         lbl_wordbook_us.pack()
-        lbl_wordbook_pos.pack()
-        lbl_wordbook_mean.pack()
-        lbl_wordbook_ex.pack(pady=3)
-        lbl_wordbook_trans.pack(pady=3)
+        lbl_wordbook_senses.pack(pady=5)
         lbl_wordbook_note.pack(pady=3)
         lbl_wordbook_added_time.pack(pady=3)
 
