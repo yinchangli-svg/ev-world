@@ -5,29 +5,46 @@ import pyttsx3
 import pandas as pd
 import os
 import random
+import time
+from datetime import datetime, timedelta
 
 # ======================
-# 版本 v2.0 一词多义支持
+# 版本 v3.0 新增艾宾浩斯遗忘曲线间隔重复记忆
 # ======================
-VERSION = "v2.0 | Wordix单词单机版（一词多义+有序背诵+拼写测试+单词本+单次计分+发音+等级+导入导出）"
+VERSION = "v3.0 | Wordix单词单机版（一词多义+有序背诵+拼写测试+单词本+单次计分+发音+等级+导入导出+艾宾浩斯间隔记忆）"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(SCRIPT_DIR, "wordix.xdb")
+
+# ======================
+# 艾宾浩斯全局配置（单位：分钟）
+# ======================
+EBBINGHAUS_INTERVALS = [
+    5,        # level 0 初次学习后5分钟
+    30,       # level 1 30分钟
+    12 * 60,  # level 2 12小时
+    24 * 60,  # level 3 1天
+    2 * 24 * 60,  # level 4 2天
+    4 * 24 * 60,  # level 5 4天
+    7 * 24 * 60,  # level 6 7天
+    15 * 24 * 60, # level 7 15天
+    30 * 24 * 60, # level 8 30天
+    999999999     # level 9 永久熟记，不再复习
+]
+MAX_MEM_LEVEL = len(EBBINGHAUS_INTERVALS) - 1
 
 # ======================
 # 初始化发音引擎
 # ======================
 engine = pyttsx3.init()
 
-
 def speak_word(text):
     if text.strip():
         engine.say(text.strip())
         engine.runAndWait()
 
-
 # ======================
-# 数据库初始化
+# 数据库初始化（新增艾宾浩斯计划表）
 # ======================
 def init_database():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -73,9 +90,21 @@ def init_database():
                     UNIQUE(word)
                 )''')
 
+    # 新增：艾宾浩斯记忆复习计划表
+    c.execute('''CREATE TABLE IF NOT EXISTS memory_schedule (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word TEXT NOT NULL UNIQUE,
+                    mem_level INTEGER DEFAULT 0,
+                    last_review_ts INTEGER DEFAULT 0,
+                    next_review_ts INTEGER DEFAULT 0,
+                    create_ts INTEGER DEFAULT 0
+                )''')
+
     # 创建索引提升查询性能
     c.execute('''CREATE INDEX IF NOT EXISTS idx_words_word ON words(word)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_word_senses_word_id ON word_senses(word_id)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_memory_word ON memory_schedule(word)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_memory_next_ts ON memory_schedule(next_review_ts)''')
 
     # 初始化等级数据
     level_data = [
@@ -90,9 +119,106 @@ def init_database():
     conn.commit()
     conn.close()
 
+# ======================
+# 艾宾浩斯记忆核心工具函数
+# ======================
+def get_now_ts():
+    """获取当前时间戳（秒）"""
+    return int(time.time())
+
+def calc_next_review_ts(base_ts, minute_gap):
+    """计算下次复习时间戳"""
+    return base_ts + minute_gap * 60
+
+def add_word_to_memory_plan(word):
+    """将单词加入艾宾浩斯记忆计划，初次5分钟后复习"""
+    now = get_now_ts()
+    first_gap = EBBINGHAUS_INTERVALS[0]
+    next_ts = calc_next_review_ts(now, first_gap)
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''INSERT OR IGNORE INTO memory_schedule
+                 (word, mem_level, last_review_ts, next_review_ts, create_ts)
+                 VALUES (?, 0, ?, ?, ?)''', (word, now, next_ts, now))
+    conn.commit()
+    conn.close()
+
+def review_memory_word(word, is_remembered: bool):
+    """
+    复习单词后更新记忆计划
+    :param word: 单词
+    :param is_remembered: True记住，False遗忘
+    """
+    now = get_now_ts()
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('SELECT mem_level FROM memory_schedule WHERE word = ?', (word,))
+    res = c.fetchone()
+    if not res:
+        conn.close()
+        return False
+    cur_level = res[0]
+
+    if is_remembered:
+        # 记住：升一级
+        new_level = cur_level + 1
+        if new_level >= MAX_MEM_LEVEL:
+            new_gap = EBBINGHAUS_INTERVALS[MAX_MEM_LEVEL]
+        else:
+            new_gap = EBBINGHAUS_INTERVALS[new_level]
+    else:
+        # 遗忘：重置回0档，重新5分钟复习
+        new_level = 0
+        new_gap = EBBINGHAUS_INTERVALS[0]
+
+    new_next_ts = calc_next_review_ts(now, new_gap)
+    c.execute('''UPDATE memory_schedule
+                 SET mem_level = ?, last_review_ts = ?, next_review_ts = ?
+                 WHERE word = ?''', (new_level, now, new_next_ts, word))
+    conn.commit()
+    conn.close()
+    return True
+
+def get_due_memory_words():
+    """获取当前已到复习时间的单词（待复习）"""
+    now = get_now_ts()
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''SELECT ms.word, ms.mem_level, ms.next_review_ts,
+                        w.uk_phonetic, w.us_phonetic,
+                        GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings
+                 FROM memory_schedule ms
+                 LEFT JOIN words w ON ms.word = w.word
+                 LEFT JOIN word_senses ws ON w.id = ws.word_id
+                 WHERE ms.next_review_ts <= ? AND ms.mem_level < ?
+                 GROUP BY ms.word
+                 ORDER BY ms.next_review_ts ASC''', (now, MAX_MEM_LEVEL))
+    data = c.fetchall()
+    conn.close()
+    return data
+
+def get_word_memory_status(word):
+    """查询单词记忆等级与下次复习时间"""
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''SELECT mem_level, last_review_ts, next_review_ts
+                 FROM memory_schedule WHERE word = ?''', (word,))
+    res = c.fetchone()
+    conn.close()
+    if not res:
+        return None
+    mem_lv, last_ts, next_ts = res
+    last_dt = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d %H:%M")
+    next_dt = datetime.fromtimestamp(next_ts).strftime("%Y-%m-%d %H:%M")
+    return {
+        "level": mem_lv,
+        "level_name": f"档位{mem_lv}({EBBINGHAUS_INTERVALS[mem_lv]}分钟间隔)",
+        "last_review": last_dt,
+        "next_review": next_dt
+    }
 
 # ======================
-# 工具函数
+# 原有数据库工具函数（无修改）
 # ======================
 def get_level_options():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -102,7 +228,6 @@ def get_level_options():
     conn.close()
     return data
 
-
 def get_level_id_by_name(name):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
@@ -111,70 +236,44 @@ def get_level_id_by_name(name):
     conn.close()
     return res[0] if res else None
 
-
 def save_word_to_db_with_senses(word, uk_phonetic, us_phonetic, level_id, senses_list):
-    """
-    保存单词及其多个词性和释义
-    word: 单词文本
-    uk_phonetic: 英音标
-    us_phonetic: 美音标
-    level_id: 等级ID
-    senses_list: [(pos, meaning, example, translation), ...]
-    """
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         c = conn.cursor()
-
-        # 检查单词是否已存在
         c.execute("SELECT id FROM words WHERE word=?", (word,))
         existing = c.fetchone()
-
         if existing:
             word_id = existing[0]
-            print(f"📝 更新单词: {word} (ID: {word_id})，删除旧释义")
-            # 删除旧的释义
             c.execute("DELETE FROM word_senses WHERE word_id=?", (word_id,))
         else:
-            # 插入新单词
             c.execute('''INSERT INTO words (word, uk_phonetic, us_phonetic, level_id)
                          VALUES (?,?,?,?)''',
                       (word, uk_phonetic, us_phonetic, level_id))
             word_id = c.lastrowid
-            print(f"✨ 新建单词: {word} (ID: {word_id})")
-
-        # 插入所有词性和释义
         for i, (pos, meaning, example, translation) in enumerate(senses_list):
-            frequency = 100 - i * 10  # 第一个释义最常用
+            frequency = 100 - i * 10
             c.execute('''INSERT INTO word_senses 
                          (word_id, pos, meaning, example, translation, frequency)
                          VALUES (?,?,?,?,?,?)''',
                       (word_id, pos.strip(), meaning.strip(),
                        example.strip(), translation.strip(), frequency))
-            print(f"  ✅ 释义 {i + 1}: [{pos}] {meaning}")
-
         conn.commit()
-        print(f"💾 数据库提交成功！共保存 {len(senses_list)} 个释义\n")
         return True
     except Exception as e:
-        print(f"❌ 保存失败: {e}\n")
+        print(f"❌ 保存失败: {e}")
         return False
     finally:
         conn.close()
 
-
 def save_word_to_db(word_data):
-    """兼容旧接口，单个词性释义"""
     word, uk_phonetic, us_phonetic, pos, meaning, level_id, example, translation = word_data
     senses_list = [(pos, meaning, example, translation)]
     return save_word_to_db_with_senses(word, uk_phonetic, us_phonetic, level_id, senses_list)
-
 
 def load_words_by_level_and_page(level_id, page_num, page_size=10):
     offset = (page_num - 1) * page_size
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-
-    # 获取每个单词的第一个释义用于列表显示
     c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, 
                         GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings,
                         l.name
@@ -184,21 +283,16 @@ def load_words_by_level_and_page(level_id, page_num, page_size=10):
                  WHERE w.level_id=?
                  GROUP BY w.id
                  LIMIT ? OFFSET ?''', (level_id, page_size, offset))
-
     data = c.fetchall()
-
     c.execute('''SELECT COUNT(DISTINCT w.id) FROM words w WHERE w.level_id=?''', (level_id,))
     total = c.fetchone()[0]
     total_page = (total + page_size - 1) // page_size
-
     conn.close()
     return data, total, total_page
-
 
 def search_word_in_db_by_level(level_id, word):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-
     c.execute('''SELECT w.word, w.uk_phonetic, w.us_phonetic, 
                         GROUP_CONCAT(ws.pos || ' ' || ws.meaning, '; ') as meanings,
                         l.name
@@ -207,66 +301,44 @@ def search_word_in_db_by_level(level_id, word):
                  LEFT JOIN levels l ON w.level_id = l.id
                  WHERE w.level_id=? AND w.word=?
                  GROUP BY w.id''', (level_id, word))
-
     res = c.fetchone()
     conn.close()
     return res
 
-
 def get_all_words_by_level(level_id):
-    """获取某等级所有单词及其完整释义（用于背诵和测试）"""
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-
-    # 获取单词基本信息
     c.execute('''SELECT DISTINCT w.word, w.uk_phonetic, w.us_phonetic
                  FROM words w
                  WHERE w.level_id=?''', (level_id,))
-
     words = []
     for row in c.fetchall():
         word, uk, us = row
-
-        # 获取该单词的所有释义
         c.execute('''SELECT pos, meaning, example, translation 
                      FROM word_senses 
                      WHERE word_id=(SELECT id FROM words WHERE word=? AND level_id=?)
                      ORDER BY frequency DESC, id ASC''', (word, level_id))
-
         senses = c.fetchall()
-
-        # 合并释义为显示格式
         full_meaning = "; ".join([f"{pos} {mean}" for pos, mean, _, _ in senses])
-
-        # 取第一个例句作为示例
         first_example = senses[0][2] if senses and senses[0][2] else ""
         first_translation = senses[0][3] if senses and senses[0][3] else ""
-
         words.append((word, uk, us, "", full_meaning, first_example, first_translation))
-
     conn.close()
     return words
 
-
 def get_word_full_details(word):
-    """获取单词的完整详细信息（所有释义）"""
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-
     c.execute("SELECT id, word, uk_phonetic, us_phonetic, level_id FROM words WHERE word=?", (word,))
     word_info = c.fetchone()
-
     if not word_info:
         return None
-
     c.execute('''SELECT pos, meaning, example, translation 
                  FROM word_senses 
                  WHERE word_id=? 
                  ORDER BY frequency DESC, id ASC''', (word_info[0],))
-
     senses = c.fetchall()
     conn.close()
-
     return {
         'word': word_info[1],
         'uk_phonetic': word_info[2],
@@ -274,7 +346,6 @@ def get_word_full_details(word):
         'level_id': word_info[4],
         'senses': senses
     }
-
 
 def add_word_to_word_book(word, note=""):
     try:
@@ -292,7 +363,6 @@ def add_word_to_word_book(word, note=""):
     finally:
         conn.close()
 
-
 def get_word_book_words():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
@@ -309,7 +379,6 @@ def get_word_book_words():
     conn.close()
     return words
 
-
 def remove_from_word_book(word):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -322,7 +391,6 @@ def remove_from_word_book(word):
         return False
     finally:
         conn.close()
-
 
 def mark_word_as_mastered(word):
     try:
@@ -337,15 +405,12 @@ def mark_word_as_mastered(word):
     finally:
         conn.close()
 
-
 # ======================
-# 导入导出核心函数
+# 导入导出核心函数（无修改）
 # ======================
 def export_current_level_words(level_id, level_name):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-
-        # 导出包含所有释义
         df = pd.read_sql(f"""
             SELECT w.word, w.uk_phonetic, w.us_phonetic, 
                    ws.pos, ws.meaning, ws.example, ws.translation
@@ -354,11 +419,9 @@ def export_current_level_words(level_id, level_name):
             WHERE w.level_id = {level_id}
             ORDER BY w.word, ws.frequency DESC
         """, conn)
-
         if df.empty:
             messagebox.showwarning("提示", "当前等级暂无单词可导出")
             return
-
         path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Excel 文件", "*.xlsx")],
@@ -366,14 +429,12 @@ def export_current_level_words(level_id, level_name):
         )
         if not path:
             return
-
         df.to_excel(path, index=False)
         messagebox.showinfo("成功", f"已导出 {len(df)} 条记录！")
     except Exception as e:
         messagebox.showerror("错误", f"导出失败：{str(e)}")
     finally:
         conn.close()
-
 
 def download_import_template():
     template = {
@@ -395,44 +456,34 @@ def download_import_template():
         df.to_excel(path, index=False)
         messagebox.showinfo("成功", "导入模板已下载完成！（支持一词多义，同一单词多行表示不同释义）")
 
-
 def import_words_excel(level_id):
     path = filedialog.askopenfilename(
         filetypes=[("Excel 文件", "*.xlsx;*.xls")]
     )
     if not path:
         return
-
     try:
         df = pd.read_excel(path)
         required = {"word", "meaning"}
         if not required.issubset(df.columns):
             messagebox.showerror("错误", "模板错误！必须包含 word 和 meaning 列")
             return
-
-        # 按单词分组处理
         grouped = df.groupby('word')
         success = 0
         fail = 0
-
         for word, group in grouped:
             try:
-                # 提取公共信息（取第一行）
                 first_row = group.iloc[0]
                 uk = str(first_row.get("uk_phonetic", "")).strip()
                 us = str(first_row.get("us_phonetic", "")).strip()
-
-                # 收集所有释义
                 senses_list = []
                 for _, row in group.iterrows():
                     pos = str(row.get("pos", "")).strip()
                     meaning = str(row["meaning"]).strip()
                     example = str(row.get("example", "")).strip()
                     translation = str(row.get("translation", "")).strip()
-
-                    if meaning:  # 释义不能为空
+                    if meaning:
                         senses_list.append((pos, meaning, example, translation))
-
                 if senses_list:
                     if save_word_to_db_with_senses(word, uk, us, level_id, senses_list):
                         success += len(senses_list)
@@ -440,16 +491,13 @@ def import_words_excel(level_id):
                         fail += 1
                 else:
                     fail += 1
-
             except Exception as e:
                 print(f"导入单词 {word} 失败: {e}")
                 fail += 1
-
         messagebox.showinfo("导入完成", f"成功：{success} 条释义\n失败/重复：{fail} 个单词")
         refresh_words()
     except Exception as e:
         messagebox.showerror("错误", f"导入失败：{str(e)}")
-
 
 # ======================
 # 主窗口初始化
@@ -457,7 +505,7 @@ def import_words_excel(level_id):
 init_database()
 root = tk.Tk()
 root.title(f"Wordix 词根单词学习 · {VERSION}")
-root.geometry("960x760")
+root.geometry("1080x860")
 root.resizable(False, False)
 
 style = ttk.Style()
@@ -493,13 +541,15 @@ tips = """功能清单：
 3. 单词背诵：有序翻卡遍历全部单词，显示完整释义列表
 4. 拼写测试：有序遍历单词自测拼写，每个单词仅计分一次
 5. 📖 单词本：自动收集错题+手动添加重点单词，专门复习
+6. 🧠 艾宾浩斯记忆：间隔重复科学复习，自动推送到期单词
 全部数据本地SQLite存储，无需联网
 
-✨ v2.0 新增：一词多义支持！同一个单词可以有多个词性和释义"""
+✨ v3.0 新增：艾宾浩斯遗忘曲线间隔重复记忆计划
+遗忘复习节点：5分钟→30分钟→12小时→1天→2天→4天→7天→15天→30天"""
 Label(tab_home, text=tips, font=("微软雅黑", 11), justify="left").pack(pady=20)
 
 # ==============================================
-# 2. 单词录入 Tab
+# 2. 单词录入 Tab（新增加入记忆计划按钮）
 # ==============================================
 tab_add_word = ttk.Frame(tab_control)
 tab_control.add(tab_add_word, text="单词录入")
@@ -513,7 +563,7 @@ entry_uk = Entry(f, width=30, font=("微软雅黑", 11))
 entry_us = Entry(f, width=30, font=("微软雅黑", 11))
 
 cb_level = ttk.Combobox(f, textvariable=current_level_name, values=level_names, width=27, state="readonly")
-cb_level.configure(state="disabled")
+cb_level.current(0)
 
 btn_speak = Button(f, text="🔊 朗读单词", font=("微软雅黑", 10, "bold"),
                    command=lambda: speak_word(entry_word.get()))
@@ -534,11 +584,8 @@ btn_speak.grid(row=0, column=2, padx=10, pady=6)
 # 词性和释义表格区域
 Label(f, text="词性、释义、例句（表格形式）：", font=("微软雅黑", 11, "bold")).grid(row=10, column=0, columnspan=3,
                                                                                sticky="w", pady=(15, 5))
-
-# 创建Treeview表格（添加复选框列）
 senses_frame = Frame(f)
 senses_frame.grid(row=11, column=0, columnspan=3, sticky="ew", pady=5)
-
 senses_tree = ttk.Treeview(senses_frame, columns=("selected", "pos", "meaning", "example", "translation"),
                            show="headings", height=6)
 senses_tree.heading("selected", text="✓")
@@ -552,237 +599,110 @@ senses_tree.column("meaning", width=120)
 senses_tree.column("example", width=200)
 senses_tree.column("translation", width=200)
 senses_tree.pack(side="left", fill="x", expand=True)
-
-# 添加滚动条
 scrollbar = ttk.Scrollbar(senses_frame, orient="vertical", command=senses_tree.yview)
 scrollbar.pack(side="right", fill="y")
 senses_tree.configure(yscrollcommand=scrollbar.set)
-
-# 配置标签样式 - 偶数行和奇数行不同背景色
 senses_tree.tag_configure("oddrow", background="#f0f8ff")
 senses_tree.tag_configure("evenrow", background="#ffffff")
-senses_tree.tag_configure("newrow", background="#fffacd")  # 新添加的行用黄色背景
-
-# 表格操作按钮
+senses_tree.tag_configure("newrow", background="#fffacd")
 btn_frame = Frame(f)
 btn_frame.grid(row=12, column=0, columnspan=3, sticky="w", pady=5)
 
-
 def add_sense_row():
-    """添加新的一行"""
     item_id = senses_tree.insert("", "end", values=("☐", "", "", "", ""))
-    # 为新添加的行设置特殊背景色
     senses_tree.item(item_id, tags=("newrow",))
-
-    # 2秒后恢复正常颜色
     def normalize_color():
-        try:
-            all_items = senses_tree.get_children()
-            for i, item in enumerate(all_items):
-                tag = "oddrow" if i % 2 == 0 else "evenrow"
-                senses_tree.item(item, tags=(tag,))
-        except:
-            pass
-
+        all_items = senses_tree.get_children()
+        for i, item in enumerate(all_items):
+            tag = "oddrow" if i % 2 == 0 else "evenrow"
+            senses_tree.item(item, tags=(tag,))
     senses_tree.after(2000, normalize_color)
 
-
 def delete_selected_rows():
-    """删除所有选中的行"""
     selected_items = []
     for item in senses_tree.get_children():
         values = senses_tree.item(item)["values"]
-        if values and values[0] == "☑":  # 已选中的行
+        if values and values[0] == "☑":
             selected_items.append(item)
-
     if not selected_items:
         messagebox.showwarning("提示", "请先勾选要删除的行（点击第一列的☐变为☑）")
         return
-
-    # 确认删除
     if messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected_items)} 行吗？"):
         for item in selected_items:
             senses_tree.delete(item)
-        # 重新调整背景色
         refresh_row_colors()
 
-
 def clear_all_rows():
-    """清空所有行"""
     if senses_tree.get_children() and messagebox.askyesno("确认", "确定要清空所有释义吗？"):
         senses_tree.delete(*senses_tree.get_children())
 
-
 def refresh_row_colors():
-    """刷新行的背景颜色"""
     all_items = senses_tree.get_children()
     for i, item in enumerate(all_items):
         tag = "oddrow" if i % 2 == 0 else "evenrow"
         senses_tree.item(item, tags=(tag,))
 
+Button(btn_frame, text="➕ 添加一行", command=add_sense_row, font=("微软雅黑", 9), bg="#e8f5e9").pack(side="left", padx=5)
+Button(btn_frame, text="🗑️ 删除选中", command=delete_selected_rows, font=("微软雅黑", 9), bg="#ffebee").pack(side="left", padx=5)
+Button(btn_frame, text="🧹 清空全部", command=clear_all_rows, font=("微软雅黑", 9), bg="#fff3e0").pack(side="left", padx=5)
 
-Button(btn_frame, text="➕ 添加一行", command=add_sense_row, font=("微软雅黑", 9), bg="#e8f5e9").pack(side="left",
-                                                                                                     padx=5)
-Button(btn_frame, text="🗑️ 删除选中", command=delete_selected_rows, font=("微软雅黑", 9), bg="#ffebee").pack(
-    side="left", padx=5)
-Button(btn_frame, text="🧹 清空全部", command=clear_all_rows, font=("微软雅黑", 9), bg="#fff3e0").pack(side="left",
-                                                                                                      padx=5)
-
-
-# 单击切换选中状态
 def toggle_selection(event):
-    """点击第一列切换选中状态"""
     region = senses_tree.identify("region", event.x, event.y)
     if region != "cell":
         return
-
     column = senses_tree.identify_column(event.x)
-    if column != "#1":  # 只响应第一列（复选框列）的点击
+    if column != "#1":
         return
-
     item = senses_tree.identify_row(event.y)
     if not item:
         return
-
-    # 获取当前值
     values = list(senses_tree.item(item)["values"])
-
-    # 切换复选框状态
-    if values[0] == "☐":
-        values[0] = "☑"
-    else:
-        values[0] = "☐"
-
+    values[0] = "☑" if values[0] == "☐" else "☐"
     senses_tree.item(item, values=tuple(values))
-
 
 senses_tree.bind("<Button-1>", toggle_selection)
 
-#
-# # 双击编辑单元格（从第二列开始）
-# def on_double_click(event):
-#     """双击单元格进行编辑"""
-#     region = senses_tree.identify("region", event.x, event.y)
-#     if region != "cell":
-#         return
-#
-#     column = senses_tree.identify_column(event.x)
-#     if column == "#1":  # 第一列是复选框，不允许编辑
-#         return
-#
-#     item = senses_tree.selection()[0] if senses_tree.selection() else None
-#     if not item:
-#         item = senses_tree.identify_row(event.y)
-#     if not item:
-#         return
-#
-#     # 获取列索引
-#     col_idx = int(column.replace("#", "")) - 1
-#
-#     bbox = senses_tree.bbox(item, column)
-#     if not bbox:
-#         return
-#
-#     x, y, width, height = bbox
-#
-#     # 创建临时输入框
-#     edit_entry = Entry(senses_tree, font=("微软雅黑", 10))
-#     edit_entry.place(x=x, y=y, width=width, height=height)
-#     edit_entry.focus()
-#
-#     # 填充当前值
-#     current_values = list(senses_tree.item(item)["values"])
-#     edit_entry.insert(0, str(current_values[col_idx]))
-#
-#     def save_edit(event=None):
-#         new_value = edit_entry.get()
-#         current_values[col_idx] = new_value
-#         senses_tree.item(item, values=tuple(current_values))
-#         edit_entry.destroy()
-#
-#     edit_entry.bind("<Return>", save_edit)
-#     edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
-#
-#
-# senses_tree.bind("<Double-1>", on_double_click)
-
-
-# 双击编辑单元格（从第二列开始）
 def on_double_click(event):
-    """双击单元格进行编辑"""
     region = senses_tree.identify("region", event.x, event.y)
     if region != "cell":
         return
-
     column = senses_tree.identify_column(event.x)
-    if column == "#1":  # 第一列是复选框，不允许编辑
+    if column == "#1":
         return
-
-    item = senses_tree.selection()[0] if senses_tree.selection() else None
-    if not item:
-        item = senses_tree.identify_row(event.y)
+    item = senses_tree.selection()[0] if senses_tree.selection() else senses_tree.identify_row(event.y)
     if not item:
         return
-
-    # 获取列索引
     col_idx = int(column.replace("#", "")) - 1
-
     bbox = senses_tree.bbox(item, column)
     if not bbox:
         return
-
     x, y, width, height = bbox
-
-    # 获取当前值
     current_values = list(senses_tree.item(item)["values"])
     old_value = str(current_values[col_idx])
-
-    print(f"✏️ 开始编辑: 行={item}, 列={col_idx}, 原值='{old_value}'")
-
-    # 创建临时输入框
     edit_entry = Entry(senses_tree, font=("微软雅黑", 10))
     edit_entry.place(x=x, y=y, width=width, height=height)
     edit_entry.focus()
     edit_entry.insert(0, old_value)
-    edit_entry.select_range(0, tk.END)  # 全选文本
-
+    edit_entry.select_range(0, tk.END)
     def save_edit(event=None):
         new_value = edit_entry.get().strip()
-        print(f"✅ 保存编辑: 新值='{new_value}'")
-
-        # 更新 Treeview 数据
         updated_values = list(current_values)
         updated_values[col_idx] = new_value
         senses_tree.item(item, values=tuple(updated_values))
-
-        # 验证是否更新成功
-        verify_values = senses_tree.item(item)["values"]
-        print(f"🔍 验证更新: {verify_values}")
-        print(f"   第{col_idx}列的值: '{verify_values[col_idx]}'")
-
         edit_entry.destroy()
-
     def cancel_edit(event=None):
-        print(f"❌ 取消编辑")
         edit_entry.destroy()
-
     edit_entry.bind("<Return>", save_edit)
     edit_entry.bind("<Escape>", cancel_edit)
-    # 失去焦点时也保存
     edit_entry.bind("<FocusOut>", lambda e: save_edit())
-
 
 senses_tree.bind("<Double-1>", on_double_click)
 
-
 def save_word():
     word = entry_word.get().strip()
-
     if not word:
         messagebox.showwarning("提示", "单词不能为空")
         return
-
-    # 从表格中获取所有释义
     all_items = senses_tree.get_children()
     if not all_items:
         messagebox.showwarning("提示", "至少添加一行词性和释义")
@@ -790,34 +710,20 @@ def save_word():
     senses_list = []
     for item in all_items:
         values = senses_tree.item(item)["values"]
-        # 跳过第一列（复选框），从第二列开始
-        pos = str(values[1]).strip() if len(values) > 1 and values[1] else ""
-        meaning = str(values[2]).strip() if len(values) > 2 and values[2] else ""
-        example = str(values[3]).strip() if len(values) > 3 and values[3] else ""
-        translation = str(values[4]).strip() if len(values) > 4 and values[4] else ""
-
-        if meaning:  # 释义不能为空
+        pos = str(values[1]).strip() if len(values) > 1 else ""
+        meaning = str(values[2]).strip() if len(values) > 2 else ""
+        example = str(values[3]).strip() if len(values) > 3 else ""
+        translation = str(values[4]).strip() if len(values) > 4 else ""
+        if meaning:
             senses_list.append((pos, meaning, example, translation))
-
     if not senses_list:
         messagebox.showwarning("提示", "至少填写一个释义")
         return
-
-    print(f"💾 准备保存 {len(senses_list)} 个释义")
-    for i, (pos, meaning, example, translation) in enumerate(senses_list, 1):
-        print(f"   释义 {i}: [{pos}] {meaning}")
-        if example:
-            print(f"      例句: {example}")
-        if translation:
-            print(f"      翻译: {translation}")
-
     level_id = current_level_id.get()
     uk = entry_uk.get().strip()
     us = entry_us.get().strip()
-
     if save_word_to_db_with_senses(word, uk, us, level_id, senses_list):
         messagebox.showinfo("成功", f"单词「{word}」已保存，共 {len(senses_list)} 个释义")
-        # 清空表单
         entry_word.delete(0, tk.END)
         entry_uk.delete(0, tk.END)
         entry_us.delete(0, tk.END)
@@ -826,55 +732,92 @@ def save_word():
     else:
         messagebox.showerror("失败", "保存失败，请重试")
 
+# 新增：保存并加入艾宾浩斯记忆计划
+def save_and_add_memory():
+    word = entry_word.get().strip()
+    if not word:
+        messagebox.showwarning("提示", "单词不能为空")
+        return
+    all_items = senses_tree.get_children()
+    if not all_items:
+        messagebox.showwarning("提示", "至少添加一行词性和释义")
+        return
+    senses_list = []
+    for item in all_items:
+        values = senses_tree.item(item)["values"]
+        pos = str(values[1]).strip() if len(values) > 1 else ""
+        meaning = str(values[2]).strip() if len(values) > 2 else ""
+        example = str(values[3]).strip() if len(values) > 3 else ""
+        translation = str(values[4]).strip() if len(values) > 4 else ""
+        if meaning:
+            senses_list.append((pos, meaning, example, translation))
+    if not senses_list:
+        messagebox.showwarning("提示", "至少填写一个释义")
+        return
+    level_id = current_level_id.get()
+    uk = entry_uk.get().strip()
+    us = entry_us.get().strip()
+    if save_word_to_db_with_senses(word, uk, us, level_id, senses_list):
+        add_word_to_memory_plan(word)
+        messagebox.showinfo("完成", f"「{word}」已保存并加入艾宾浩斯记忆计划！5分钟后首次复习")
+        entry_word.delete(0, tk.END)
+        entry_uk.delete(0, tk.END)
+        entry_us.delete(0, tk.END)
+        senses_tree.delete(*senses_tree.get_children())
+        refresh_words()
+    else:
+        messagebox.showerror("失败", "保存失败")
 
-ttk.Button(tab_add_word, text="保存单词", style="Big.TButton", command=save_word).pack(pady=15)
+btn_save_frame = Frame(tab_add_word)
+btn_save_frame.pack(pady=15)
+ttk.Button(btn_save_frame, text="仅保存单词", style="Mid.TButton", command=save_word).grid(row=0, column=0, padx=10)
+ttk.Button(btn_save_frame, text="保存+加入记忆计划", style="Big.TButton", command=save_and_add_memory).grid(row=0, column=1, padx=10)
 
-# 添加示例说明
 example_text = """💡 使用说明：
 1. 点击「➕ 添加一行」添加新的词性和释义
 2. 点击第一列的 ☐ 变成 ☑ 来选中行
 3. 双击单元格可直接编辑内容（除复选框列）
 4. 选中行后点击「🗑️ 删除选中」批量删除
-5. 每个释义可以独立配置例句和翻译"""
-Label(tab_add_word, text=example_text, font=("微软雅黑", 9), fg="gray",
-      justify="left").pack(pady=10)
+5. 点击【保存+加入记忆计划】自动加入艾宾浩斯间隔复习"""
+Label(tab_add_word, text=example_text, font=("微软雅黑", 9), fg="gray", justify="left").pack(pady=10)
 
 # ==============================================
-# 3. 词库管理 Tab
+# 3. 词库管理 Tab（新增加入记忆计划按钮）
 # ==============================================
 tab_table = ttk.Frame(tab_control)
 tab_control.add(tab_table, text="词库管理")
 
 Label(tab_table, text="词库管理", font=("微软雅黑", 16, "bold")).pack(pady=5)
-
 row1 = Frame(tab_table)
 row1.pack(fill="x", padx=20, pady=2)
 Label(row1, text="等级：", font=("微软雅黑", 12)).pack(side="left", padx=2)
 level_comb = ttk.Combobox(row1, textvariable=current_level_name, values=level_names, width=18, state="readonly")
+level_comb.current(0)
 level_comb.pack(side="left", padx=5)
-
 Label(row1, text="搜索：", font=("微软雅黑", 12)).pack(side="left", padx=2)
 search_entry = Entry(row1, width=18, font=("微软雅黑", 12))
 search_entry.pack(side="left", padx=5)
-
-Button(row1, text="🔍", font=("微软雅黑", 12, "bold"), width=3,
-       command=lambda: search_word()).pack(side="left")
+Button(row1, text="🔍", font=("微软雅黑", 12, "bold"), width=3, command=lambda: search_word()).pack(side="left")
 
 row2 = Frame(tab_table)
 row2.pack(fill="x", padx=20, pady=5)
-
-Button(row2, text="📥 导出", font=("微软雅黑", 11, "bold"),
-       command=lambda: export_current_level_words(current_level_id.get(), current_level_name.get())
-       ).pack(side="left", padx=5)
-
-Button(row2, text="📤 导入", font=("微软雅黑", 11, "bold"),
-       command=lambda: import_words_excel(current_level_id.get())
-       ).pack(side="left", padx=5)
-
+Button(row2, text="📥 导出", font=("微软雅黑", 11, "bold"), command=lambda: export_current_level_words(current_level_id.get(), current_level_name.get())).pack(side="left", padx=5)
+Button(row2, text="📤 导入", font=("微软雅黑", 11, "bold"), command=lambda: import_words_excel(current_level_id.get())).pack(side="left", padx=5)
 lbl_temp = Label(row2, text="下载导入模板", fg="blue", cursor="hand2", font=("微软雅黑", 10, "underline"))
 lbl_temp.pack(side="left", padx=5)
 lbl_temp.bind("<Button-1>", lambda e: download_import_template())
 
+# 新增：选中单词加入记忆计划
+def add_selected_to_memory():
+    sel = tree.selection()
+    if not sel:
+        messagebox.showwarning("提示", "请先选中表格中的单词")
+        return
+    word = tree.item(sel[0], "values")[0]
+    add_word_to_memory_plan(word)
+    messagebox.showinfo("成功", f"「{word}」已加入艾宾浩斯记忆复习计划")
+
+Button(row2, text="🧠 加入记忆计划", font=("微软雅黑", 11, "bold"), bg="#dceaff", command=add_selected_to_memory).pack(side="left", padx=10)
 
 def on_level_change(event):
     idx = level_comb.current()
@@ -883,9 +826,7 @@ def on_level_change(event):
     current_page = 1
     refresh_words()
 
-
 level_comb.bind("<<ComboboxSelected>>", on_level_change)
-
 
 def search_word():
     keyword = search_entry.get().strip()
@@ -901,7 +842,6 @@ def search_word():
     else:
         messagebox.showwarning("未找到", "该等级下无此单词")
 
-
 search_entry.bind("<Return>", lambda e: search_word())
 
 tree = ttk.Treeview(tab_table, columns=("w", "uk", "us", "m", "l"), show="headings", height=15)
@@ -913,7 +853,7 @@ tree.heading("l", text="等级")
 tree.column("w", width=120)
 tree.column("uk", width=90)
 tree.column("us", width=90)
-tree.column("m", width=300)
+tree.column("m", width=320)
 tree.column("l", width=120)
 tree.pack(padx=20, pady=10, fill="x")
 
@@ -922,13 +862,11 @@ page_frame.pack(fill="x", padx=20, pady=5)
 page_label = Label(page_frame, text="第 1 页", font=("微软雅黑", 11))
 page_label.pack(side="left", padx=10)
 
-
 def prev_page():
     global current_page
     if current_page > 1:
         current_page -= 1
         refresh_words()
-
 
 def next_page():
     _, _, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
@@ -936,12 +874,10 @@ def next_page():
         current_page += 1
         refresh_words()
 
-
 btn_prev = Button(page_frame, text="上一页", command=prev_page, width=10)
 btn_prev.pack(side="left", padx=5)
 btn_next = Button(page_frame, text="下一页", command=next_page, width=10)
 btn_next.pack(side="left", padx=5)
-
 
 def on_tree_click(event):
     item = tree.selection()
@@ -949,10 +885,8 @@ def on_tree_click(event):
         word = tree.item(item[0], "values")[0]
         speak_word(word)
 
-
 tree.bind("<Double-1>", on_tree_click)
 tree.bind("<Return>", on_tree_click)
-
 
 def refresh_words():
     data, total, total_page = load_words_by_level_and_page(current_level_id.get(), current_page, page_size)
@@ -961,12 +895,11 @@ def refresh_words():
         tree.insert("", "end", values=row)
     page_label.config(text=f"第 {current_page}/{total_page} 页 | 本等级：{total} 个")
 
-
 refresh_words()
-Label(tab_table, text="💡 双击 / 回车 朗读单词｜导入导出支持一词多义", font=("微软雅黑", 11)).pack()
+Label(tab_table, text="💡 双击 / 回车 朗读单词｜选中单词可一键加入艾宾浩斯记忆计划", font=("微软雅黑", 11)).pack()
 
 # ==============================================
-# 4. 单词背诵 Tab
+# 4. 单词背诵 Tab（新增加入记忆计划）
 # ==============================================
 tab_memorize = ttk.Frame(tab_control)
 tab_control.add(tab_memorize, text="单词背诵")
@@ -994,7 +927,6 @@ lbl_senses_content = Label(detail_frame, text="", font=("微软雅黑", 11), wra
 lbl_ex_title = Label(detail_frame, text="\n例句：", font=("微软雅黑", 12, "bold"))
 lbl_ex_content = Label(detail_frame, text="", font=("微软雅黑", 11), wraplength=720, justify="left")
 
-
 def refresh_memorize_display():
     global mem_word_list, mem_index
     if not mem_word_list:
@@ -1008,19 +940,16 @@ def refresh_memorize_display():
     detail_frame.pack_forget()
     mem_pos_label.config(text=f"{mem_index + 1}/{len(mem_word_list)}")
 
-
 def load_memorize_words():
     global mem_word_list, mem_index
     mem_word_list = get_all_words_by_level(current_level_id.get())
     mem_index = 0
     refresh_memorize_display()
 
-
 def flip_card():
     if not mem_word_list:
         return
     word, uk, us, pos, mean, ex, trans = mem_word_list[mem_index]
-
     if is_show_detail.get():
         is_show_detail.set(False)
         lbl_mem_word.config(text=word)
@@ -1030,25 +959,17 @@ def flip_card():
         lbl_mem_word.config(text=word)
         lbl_uk.config(text=f"英音：{uk if uk else '暂无'}")
         lbl_us.config(text=f"美音：{us if us else '暂无'}")
-
-        # 获取完整释义列表
         details = get_word_full_details(word)
         if details and details['senses']:
-            # 构建释义文本
             senses_text = ""
             examples_text = ""
-
             for i, (pos, meaning, example, translation) in enumerate(details['senses'], 1):
                 senses_text += f"{i}. {pos} {meaning}\n"
-
-                # 如果有例句，添加到例句文本
                 if example:
                     examples_text += f"{i}. {example}\n"
                     if translation:
                         examples_text += f"   {translation}\n"
-
             lbl_senses_content.config(text=senses_text)
-
             if examples_text:
                 lbl_ex_content.config(text=examples_text)
                 lbl_ex_title.pack()
@@ -1062,18 +983,15 @@ def flip_card():
             lbl_ex_content.config(text="")
             lbl_ex_title.pack_forget()
             lbl_ex_content.pack_forget()
-
         detail_frame.pack(pady=10)
         lbl_uk.pack()
         lbl_us.pack()
         lbl_senses_title.pack()
         lbl_senses_content.pack(pady=5)
 
-
 def speak_mem_word():
     if mem_word_list:
         speak_word(mem_word_list[mem_index][0])
-
 
 def mem_prev():
     global mem_index
@@ -1086,7 +1004,6 @@ def mem_prev():
     mem_index -= 1
     refresh_memorize_display()
 
-
 def mem_next():
     global mem_index
     if not mem_word_list:
@@ -1098,17 +1015,26 @@ def mem_next():
     mem_index += 1
     refresh_memorize_display()
 
+# 当前单词加入记忆计划
+def mem_add_memory():
+    if not mem_word_list:
+        messagebox.showinfo("提示", "请先加载词库")
+        return
+    word = mem_word_list[mem_index][0]
+    add_word_to_memory_plan(word)
+    messagebox.showinfo("完成", f"「{word}」加入艾宾浩斯记忆计划")
 
 mem_btn_frame = Frame(tab_memorize)
 mem_btn_frame.pack(pady=10)
-ttk.Button(mem_btn_frame, text="加载词库", style="Mid.TButton", command=load_memorize_words).grid(row=0, column=0,
-                                                                                                  padx=6)
+ttk.Button(mem_btn_frame, text="加载词库", style="Mid.TButton", command=load_memorize_words).grid(row=0, column=0, padx=6)
 ttk.Button(mem_btn_frame, text="上一个", style="Mid.TButton", command=mem_prev).grid(row=0, column=1, padx=6)
 ttk.Button(mem_btn_frame, text="下一个", style="Mid.TButton", command=mem_next).grid(row=0, column=2, padx=6)
 ttk.Button(mem_btn_frame, text="翻面查看释义", style="Mid.TButton", command=flip_card).grid(row=0, column=3, padx=6)
 ttk.Button(mem_btn_frame, text="🔊 朗读单词", style="Mid.TButton", command=speak_mem_word).grid(row=0, column=4, padx=6)
+ttk.Button(mem_btn_frame, text="🧠 加入记忆计划", style="Mid.TButton", command=mem_add_memory).grid(row=0, column=5, padx=6)
+Label(tab_memorize, text="操作提示：切换上方等级后点击「加载词库」更新背诵列表，可将当前单词加入艾宾浩斯复习", font=("微软雅黑", 10)).pack(pady=5)
 
-Label(tab_memorize, text="操作提示：切换上方等级后点击「加载词库」更新背诵列表", font=("微软雅黑", 10)).pack(pady=5)
+
 
 # ==============================================
 # 5. 拼写测试 Tab
@@ -1482,6 +1408,191 @@ ttk.Button(btn_row2, text="🗑️ 从单词本删除", style="Mid.TButton", com
 
 Label(tab_wordbook, text="💡 提示：拼写测试答错的单词会自动加入单词本 | 也可手动添加重点单词 | 点击「已掌握」可将单词移出",
       font=("微软雅黑", 10), fg="blue").pack(pady=5)
+
+
+# ==============================================
+# 7. 🧠 艾宾浩斯复习 独立新增标签页
+# ==============================================
+tab_ebbinghaus = ttk.Frame(tab_control)
+tab_control.add(tab_ebbinghaus, text="🧠 艾宾浩斯复习")
+
+# 全局缓存当前待复习列表、当前下标
+eb_due_list = []
+eb_current_idx = 0
+
+
+# ======================
+# 艾宾浩斯页面核心函数
+# ======================
+def refresh_eb_list():
+    """刷新所有到期待复习单词列表"""
+    global eb_due_list, eb_current_idx
+    eb_due_list = get_due_memory_words()
+    eb_current_idx = 0
+    lbl_eb_total.config(text=f"待复习单词：{len(eb_due_list)} 个")
+    if len(eb_due_list) == 0:
+        lbl_eb_word.config(text="🎉 今日无到期复习单词，稍后再来！")
+        eb_detail_frame.pack_forget()
+        lbl_eb_pos.config(text="0/0")
+        return
+    render_eb_card()
+
+def render_eb_card():
+    """渲染当前下标单词卡片"""
+    global eb_due_list, eb_current_idx
+    if not eb_due_list:
+        return
+    word, mem_lv, next_ts, uk, us, meanings = eb_due_list[eb_current_idx]
+    # 更新顶部页码
+    lbl_eb_pos.config(text=f"{eb_current_idx + 1}/{len(eb_due_list)}")
+    # 重置详情折叠状态
+    eb_show_detail_flag.set(False)
+    eb_detail_frame.pack_forget()
+    # 基础单词显示
+    lbl_eb_word.config(text=word)
+    # 档位文本
+    level_min = EBBINGHAUS_INTERVALS[mem_lv]
+    lbl_eb_lv.config(text=f"记忆档位：{mem_lv} 档 | 当前间隔 {level_min} 分钟")
+
+def eb_toggle_detail():
+    """展开/收起完整音标、多释义、例句"""
+    global eb_due_list, eb_current_idx
+    if not eb_due_list:
+        return
+    word, mem_lv, next_ts, uk, us, meanings = eb_due_list[eb_current_idx]
+    if eb_show_detail_flag.get():
+        # 收起
+        eb_show_detail_flag.set(False)
+        eb_detail_frame.pack_forget()
+    else:
+        # 展开
+        eb_show_detail_flag.set(True)
+        eb_detail_frame.pack(pady=10)
+        lbl_eb_uk.config(text=f"英音：{uk if uk else '无'}")
+        lbl_eb_us.config(text=f"美音：{us if us else '无'}")
+        # 加载完整多释义
+        full_info = get_word_full_details(word)
+        sense_str = ""
+        ex_str = ""
+        if full_info and full_info["senses"]:
+            for idx, (pos, mean, ex, trans) in enumerate(full_info["senses"], 1):
+                sense_str += f"{idx}. {pos} {mean}\n"
+                if ex:
+                    ex_str += f"{idx}. {ex}\n    {trans}\n"
+        lbl_eb_sense_text.config(text=sense_str)
+        if ex_str.strip():
+            lbl_eb_ex_title.pack()
+            lbl_eb_ex_text.config(text=ex_str)
+            lbl_eb_ex_text.pack(pady=4)
+        else:
+            lbl_eb_ex_title.pack_forget()
+            lbl_eb_ex_text.pack_forget()
+        lbl_eb_uk.pack()
+        lbl_eb_us.pack()
+        lbl_eb_lv.pack(pady=3)
+        lbl_eb_sense_title.pack()
+        lbl_eb_sense_text.pack(pady=3)
+
+def eb_speak():
+    """朗读当前单词"""
+    global eb_due_list, eb_current_idx
+    if not eb_due_list:
+        return
+    word = eb_due_list[eb_current_idx][0]
+    speak_word(word)
+
+def next_eb_card_after_review():
+    """复习完成后切换下一张，无单词则清空界面"""
+    global eb_due_list, eb_current_idx
+    eb_current_idx += 1
+    if eb_current_idx >= len(eb_due_list):
+        # 全部复习完毕
+        eb_due_list.clear()
+        eb_current_idx = 0
+        lbl_eb_word.config(text="✅ 所有到期单词复习完成！")
+        eb_detail_frame.pack_forget()
+        lbl_eb_total.config(text="待复习单词：0 个")
+        lbl_eb_pos.config(text="0/0")
+        messagebox.showinfo("完成", "本轮所有到期单词复习完毕！")
+        return
+    render_eb_card()
+
+def eb_mark_remember():
+    # 标记记住，升档
+    global eb_due_list, eb_current_idx
+    if not eb_due_list:
+        return
+    word = eb_due_list[eb_current_idx][0]
+    review_memory_word(word, is_remembered=True)
+    messagebox.showinfo("记住了", f"「{word}」记忆档位提升，下次复习间隔延长！")
+    next_eb_card_after_review()
+
+def eb_mark_forget():
+    # 标记遗忘，重置0档
+    global eb_due_list, eb_current_idx
+    if not eb_due_list:
+        return
+    word = eb_due_list[eb_current_idx][0]
+    review_memory_word(word, is_remembered=False)
+    messagebox.showwarning("遗忘", f"「{word}」已重置初始档位，5分钟后再次复习！")
+    next_eb_card_after_review()
+
+# 顶部统计栏
+eb_top_frame = Frame(tab_ebbinghaus)
+eb_top_frame.pack(fill="x", padx=20, pady=8)
+lbl_eb_total = Label(eb_top_frame, text="待复习单词：0 个", font=("微软雅黑", 12, "bold"), fg="#2060c0")
+lbl_eb_pos = Label(eb_top_frame, text="0/0", font=("微软雅黑", 12))
+btn_refresh_eb = ttk.Button(eb_top_frame, text="🔄 刷新待复习列表", style="Mid.TButton", command=refresh_eb_list)
+
+lbl_eb_total.pack(side="left", padx=10)
+lbl_eb_pos.pack(side="left", padx=20)
+btn_refresh_eb.pack(side="right", padx=10)
+
+# 单词卡片容器
+eb_card_frame = Frame(tab_ebbinghaus, bd=3, relief="solid", width=900, height=420)
+eb_card_frame.pack(padx=30, pady=15, fill="x")
+eb_card_frame.pack_propagate(False)
+
+# 卡片主单词
+lbl_eb_word = Label(eb_card_frame, text="点击【刷新待复习列表】加载到期单词", font=("微软雅黑", 32, "bold"), wraplength=820)
+lbl_eb_word.pack(pady=40)
+
+# 详情容器（音标+释义+例句）
+eb_detail_frame = Frame(eb_card_frame)
+lbl_eb_uk = Label(eb_detail_frame, text="英音：", font=("微软雅黑", 12))
+lbl_eb_us = Label(eb_detail_frame, text="美音：", font=("微软雅黑", 12))
+lbl_eb_lv = Label(eb_detail_frame, text="记忆档位：", font=("微软雅黑", 11, "bold"), fg="#c04020")
+lbl_eb_sense_title = Label(eb_detail_frame, text="完整释义：", font=("微软雅黑", 12, "bold"))
+lbl_eb_sense_text = Label(eb_detail_frame, text="", font=("微软雅黑", 11), wraplength=800, justify="left")
+lbl_eb_ex_title = Label(eb_detail_frame, text="例句：", font=("微软雅黑", 12, "bold"))
+lbl_eb_ex_text = Label(eb_detail_frame, text="", font=("微软雅黑", 11), wraplength=800, justify="left")
+
+# 底部操作按钮区
+eb_btn_frame = Frame(tab_ebbinghaus)
+eb_btn_frame.pack(pady=12)
+btn_eb_read = ttk.Button(eb_btn_frame, text="🔊 朗读单词", style="Mid.TButton", command=eb_speak)
+btn_eb_show_detail = ttk.Button(eb_btn_frame, text="📖 查看完整释义", style="Mid.TButton", command=eb_toggle_detail)
+btn_eb_forget = ttk.Button(eb_btn_frame, text="❌ 忘记了（重置5分钟重学）", style="Mid.TButton", command=eb_mark_forget)
+btn_eb_remember = ttk.Button(eb_btn_frame, text="✅ 记住了（拉长复习周期）", style="Big.TButton", command=eb_mark_remember)
+
+btn_eb_read.grid(row=0, column=0, padx=6)
+btn_eb_show_detail.grid(row=0, column=1, padx=6)
+btn_eb_forget.grid(row=0, column=2, padx=10)
+btn_eb_remember.grid(row=0, column=3, padx=10)
+
+# 提示文字
+Label(tab_ebbinghaus, text="规则：记住自动升档拉长间隔；忘记直接重置0档，5分钟后再次复习；升到30天档位永久不再推送",
+      font=("微软雅黑", 10), fg="#555").pack(pady=5)
+
+# 控制变量：是否展开释义
+eb_show_detail_flag = tk.BooleanVar(value=False)
+
+
+# 页面加载自动刷新一次
+tab_ebbinghaus.bind("<Map>", lambda e: refresh_eb_list())
+
+
+
 
 # ======================
 # 主循环启动
