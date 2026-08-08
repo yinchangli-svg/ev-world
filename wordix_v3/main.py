@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+# 将 wordix_v3 目录加入Python搜索路径
+BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR))
 """Wordix v3.0 主程序入口"""
 import tkinter as tk
 from tkinter import ttk

@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 from tkinter import messagebox, filedialog
-from wordix_v3.database import WordRepository
-from wordix_v3.database.db_manager import get_connection
+from database import WordRepository
+from database.db_manager import get_connection
 
 
 class ImportExportService:

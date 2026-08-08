@@ -93,11 +93,14 @@ class MemorizeTab(tk.Frame):
             if details and details['senses']:
                 senses_text = ""
                 for i, (pos, meaning, example, translation) in enumerate(details['senses'], 1):
-                    senses_text += f"{i}. {pos} {meaning}\n"
+                    senses_text += f"   {i}. {pos} {meaning}\n"
+                    senses_text += f"   例句：{example}\n"
+                    senses_text += f"   翻译：{translation}\n\n"
 
                 self.lbl_uk.config(text=f"英音：{word_data[1] if word_data[1] else '暂无'}")
                 self.lbl_us.config(text=f"美音：{word_data[2] if word_data[2] else '暂无'}")
-                self.lbl_senses_content.config(text=senses_text)
+                self.lbl_senses_content.config(text=senses_text,justify="center",anchor="center")
+
 
                 self.detail_frame.pack(pady=10)
                 self.lbl_uk.pack()

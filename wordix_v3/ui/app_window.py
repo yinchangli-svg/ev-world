@@ -2,12 +2,12 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from wordix_v3.config import (
+from config import (
     VERSION, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_RESIZABLE,
     STYLE_BIG_BUTTON, STYLE_MID_BUTTON
 )
-from wordix_v3.services import WordService, MemoryService, WordBookService, ImportExportService
-from wordix_v3.utils import speak_word
+from services import WordService, MemoryService, WordBookService, ImportExportService
+from utils import speak_word
 
 
 class AppWindow:
@@ -63,45 +63,48 @@ class AppWindow:
         self.tab_control = ttk.Notebook(self.root)
         self.tab_control.pack(expand=1, fill="both", padx=10, pady=10)
 
-        # TODO: 在这里创建各个Tab（需要从原 word_app.py 迁移）
-        # 示例：
-        # from ui.tabs.home_tab import HomeTab
-        # self.home_tab = HomeTab(self.tab_control, self)
-        # self.tab_control.add(self.home_tab, text="首页")
+        # 1. 首页
+        from ui.tabs.home_tab import HomeTab
+        self.home_tab = HomeTab(self.tab_control, self)
+        self.tab_control.add(self.home_tab, text="首页")
 
-        # 临时创建一个简单的首页提示
-        tab_home = ttk.Frame(self.tab_control)
-        self.tab_control.add(tab_home, text="首页")
+        # 2. 单词录入
+        from ui.tabs.add_word_tab import AddWordTab
+        self.add_word_tab = AddWordTab(self.tab_control, self)
+        self.tab_control.add(self.add_word_tab, text="单词录入")
 
-        tk.Label(tab_home, text="🔥 Wordix 词根单词学习系统",
-                 font=("微软雅黑", 22, "bold")).pack(pady=30)
-        tk.Label(tab_home, text=VERSION, font=("微软雅黑", 12)).pack(pady=5)
+        # 3. 词库管理
+        from ui.tabs.word_list_tab import WordListTab
+        self.word_list_tab = WordListTab(self.tab_control, self)
+        self.tab_control.add(self.word_list_tab, text="词库管理")
 
-        tips = """
-功能清单：
-1. 单词录入：支持一词多义、一词多词性，表格形式录入
-2. 词库管理：搜索、分页、Excel导入导出（支持多义词）
-3. 单词背诵：有序翻卡遍历全部单词，显示完整释义列表
-4. 拼写测试：有序遍历单词自测拼写，每个单词仅计分一次
-5. 📖 单词本：自动收集错题+手动添加重点单词，专门复习
-6. 🧠 艾宾浩斯记忆：间隔重复科学复习，自动推送到期单词
-7. 🎮 单词消除游戏：寓教于乐，边玩边学
+        # 4. 单词背诵
+        from ui.tabs.memorize_tab import MemorizeTab
+        self.memorize_tab = MemorizeTab(self.tab_control, self)
+        self.tab_control.add(self.memorize_tab, text="单词背诵")
 
-全部数据本地SQLite存储，无需联网
+        # 5. 拼写测试
+        from ui.tabs.spell_tab import SpellTab
+        self.spell_tab = SpellTab(self.tab_control, self)
+        self.tab_control.add(self.spell_tab, text="拼写测试")
 
-✨ v3.0 新增：艾宾浩斯遗忘曲线间隔重复记忆计划
-遗忘复习节点：5分钟→30分钟→12小时→1天→2天→4天→7天→15天→30天
-        """
-        tk.Label(tab_home, text=tips, font=("微软雅黑", 11), justify="left").pack(pady=20)
+        # 6. 单词本
+        from ui.tabs.wordbook_tab import WordBookTab
+        self.wordbook_tab = WordBookTab(self.tab_control, self)
+        self.tab_control.add(self.wordbook_tab, text="📖 单词本")
 
-        tk.Label(tab_home, text="⚠️ 重构进行中... 更多功能即将推出",
-                 font=("微软雅黑", 14, "bold"), fg="blue").pack(pady=30)
-        tk.Label(tab_home, text="当前可使用原版 wordix/word_app.py",
-                 font=("微软雅黑", 12), fg="red").pack()
+        # 7. 艾宾浩斯复习
+        from ui.tabs.ebbinghaus_tab import EbbinghausTab
+        self.ebbinghaus_tab = EbbinghausTab(self.tab_control, self)
+        self.tab_control.add(self.ebbinghaus_tab, text="🧠 艾宾浩斯")
+
+        # 8. 单词消除游戏
+        from ui.tabs.game_tab import GameTab
+        self.game_tab = GameTab(self.tab_control, self)
+        self.tab_control.add(self.game_tab, text="🎮 单词消除")
 
     def bind_global_events(self):
         """绑定全局事件"""
-        # 可以在这里添加全局快捷键等
         pass
 
     def get_current_level_id(self):

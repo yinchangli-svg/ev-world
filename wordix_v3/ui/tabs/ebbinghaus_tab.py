@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from wordix_v3.config import EBBINGHAUS_INTERVALS
+from config import EBBINGHAUS_INTERVALS
 
 
 class EbbinghausTab(tk.Frame):

@@ -3,8 +3,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import random
 
-from wordix_v3.config import GAME_WIDTH, GAME_HEIGHT, WORD_COLORS, GAME_SPEED_MAP, GAME_SPAWN_INTERVAL_MAP
-from wordix_v3.ui.widgets.falling_word import FallingWord
+from config import GAME_WIDTH, GAME_HEIGHT, WORD_COLORS, GAME_SPEED_MAP, GAME_SPAWN_INTERVAL_MAP
+from ui.widgets.falling_word import FallingWord
 
 
 class GameTab(tk.Frame):

@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from wordix_v3.config import VERSION
+from config import VERSION
 
 
 class HomeTab(tk.Frame):

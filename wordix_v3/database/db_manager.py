@@ -1,6 +1,6 @@
 """数据库管理模块 - 初始化和连接管理"""
 import sqlite3
-from wordix_v3.config import DB_NAME, LEVEL_DATA
+from config import DB_NAME, LEVEL_DATA
 
 
 def get_connection():
